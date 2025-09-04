@@ -1,10 +1,10 @@
 {
   "name": "hecom-i18n-tools",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "RN/JS/TS 多项目国际化扫描与Excel导出/导入工具",
-  "main": "src/cli.js",
+  "main": "dist/cli.js",
   "bin": {
-    "hecom-i18n-tools": "src/cli.js"
+    "hecom-i18n-tools": "dist/cli.js"
   },
   "files": [
     "dist/",
@@ -15,9 +15,9 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "start": "node dist/cli.js",
-    "scan": "yarn ts-node src/cli.ts scan",
-    "replace": "yarn ts-node src/cli.ts replace",
-    "gen": "yarn ts-node src/cli.ts gen"
+    "scan": "yarn ts-node dist/cli.ts scan",
+    "replace": "yarn ts-node dist/cli.ts replace",
+    "gen": "yarn ts-node dist/cli.ts gen"
   },
   "keywords": [
     "i18n",
