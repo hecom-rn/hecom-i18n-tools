@@ -103,7 +103,14 @@ export function replaceCommand(opts: any) {
       StringLiteral(path) {
         const v = path.node.value;
         if (valueKeyMap[v]) {
-          path.replaceWith(t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]));
+          const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]);
+          // 检查父节点是否为 JSXAttribute
+          if (path.parentPath.isJSXAttribute()) {
+            // 在 JSX 属性中需要用 JSXExpressionContainer 包装
+            path.replaceWith(t.jsxExpressionContainer(callExpression));
+          } else {
+            path.replaceWith(callExpression);
+          }
           replaced = true;
         }
       },
@@ -136,6 +143,7 @@ export function replaceCommand(opts: any) {
         // 检查整个模板字符串是否匹配
         if (valueKeyMap[fullValue]) {
           // 如果有表达式，则需要传递参数
+          let callExpression;
           if (expressions.length > 0) {
             // 构建参数对象 { Identifier1: value1, Identifier2: value2, ... }
             // 与 scanner.ts 中的占位符保持一致
@@ -146,13 +154,21 @@ export function replaceCommand(opts: any) {
               return t.objectProperty(key, expr);
             });
             const objectExpression = t.objectExpression(properties);
-            path.replaceWith(t.callExpression(t.identifier('t'), [
+            callExpression = t.callExpression(t.identifier('t'), [
               t.stringLiteral(valueKeyMap[fullValue]),
               objectExpression
-            ]));
+            ]);
           } else {
             // 没有表达式，直接替换
-            path.replaceWith(t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[fullValue])]));
+            callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[fullValue])]);
+          }
+          
+          // 检查父节点是否为 JSXAttribute
+          if (path.parentPath.isJSXAttribute()) {
+            // 在 JSX 属性中需要用 JSXExpressionContainer 包装
+            path.replaceWith(t.jsxExpressionContainer(callExpression));
+          } else {
+            path.replaceWith(callExpression);
           }
           replaced = true;
           return;
@@ -164,10 +180,14 @@ export function replaceCommand(opts: any) {
           const raw = q.value.raw;
           if (valueKeyMap[raw]) {
             const expr = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[raw])]);
+            // 检查父节点是否为 JSXAttribute
+            const exprContainer = path.parentPath.isJSXAttribute() ? 
+              t.jsxExpressionContainer(expr) : expr;
+              
             if (idx < path.node.expressions.length) {
-              path.node.expressions.splice(idx, 0, expr);
+              path.node.expressions.splice(idx, 0, exprContainer);
             } else {
-              path.node.expressions.push(expr);
+              path.node.expressions.push(exprContainer);
             }
             q.value.raw = '';
             q.value.cooked = '';

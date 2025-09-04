@@ -26,12 +26,18 @@ function defaultGenerateStableHash(str: string): string {
   return crypto.createHash('md5').update(str).digest('hex').substring(0, 12);
 }
 
-function extractStringsFromFile(filePath: string, options: ScanOptions = {}, gitlabPrefix?: string): ScanResult[] {
+function extractStringsFromFile(filePath: string, options: ScanOptions = scanOptions, gitlabPrefix?: string): ScanResult[] {
   const { generateStableHash = defaultGenerateStableHash } = options;
   const code = fs.readFileSync(filePath, 'utf8');
   const results: ScanResult[] = [];
   const projectRoot = process.cwd();
   let relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/');
+
+  // 检查文件是否包含 i18n-ignore-file 注释，如果包含则忽略整个文件
+  if (code.includes('i18n-ignore-file')) {
+    console.log(`[i18n-tools] 文件 ${filePath} 被 i18n-ignore-file 注释忽略`);
+    return results;
+  }
 
   // 预处理，找出所有注释区间，后续跳过注释内字符串
   const commentRanges: Array<{start:number,end:number}> = [];
@@ -41,8 +47,29 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = {}, git
     commentRanges.push({start: m.index, end: m.index + m[0].length});
   }
 
+  // 查找 i18n-ignore 注释标记的行
+  const ignoreLines: number[] = [];
+  const ignoreRegex = /i18n-ignore/;
+  let lineIndex = 0;
+  let lineStart = 0;
+  for (let i = 0; i <= code.length; i++) {
+    if (i === code.length || code[i] === '\n') {
+      const lineContent = code.substring(lineStart, i);
+      if (ignoreRegex.test(lineContent)) {
+        ignoreLines.push(lineIndex + 1); // 行号从1开始
+      }
+      lineIndex++;
+      lineStart = i + 1;
+    }
+  }
+
   function isInComment(start: number, end: number) {
     return commentRanges.some(r => start >= r.start && end <= r.end);
+  }
+
+  // 检查指定行是否应该被忽略
+  function shouldIgnoreLine(line: number): boolean {
+    return ignoreLines.includes(line);
   }
 
   try {
@@ -73,6 +100,9 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = {}, git
         if (path.node.loc && /[\u4e00-\u9fa5]/.test(path.node.value)) {
           // 跳过注释内字符串
           if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
+          
+          // 跳过被 i18n-ignore 注释标记的行
+          if (shouldIgnoreLine(path.node.loc.start.line)) return;
           
           // 跳过JSX中testID属性的中文字符串
           const parent = path.parent;
@@ -143,7 +173,10 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = {}, git
             if (firstQuasi.start !== undefined && firstQuasi.end !== undefined && 
                 isInComment(firstQuasi.start, firstQuasi.end)) return;
                 
+            // 跳过被 i18n-ignore 注释标记的行
             const line = path.node.loc.start.line;
+            if (shouldIgnoreLine(line)) return;
+                
             // 使用稳定的哈希算法生成key，确保唯一性且不会太长
             const key = 'i18n_' + generateStableHash(fullValue);
             const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';

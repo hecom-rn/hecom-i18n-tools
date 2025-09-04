@@ -13,6 +13,13 @@
 
 ```sh
 npx ts-node dist/cli.ts scan --dist core --out ./i18n.xlsx --gitlab https://xxxx
+
+可以传入 scannerOptions，来自定义这三个方法
+interface ScanOptions {
+  translate?: (text: string) => string | undefined;
+  generateStableHash?: (str: string) => string;
+  ignoreFiles?: string[];
+}
 ```
 
 ### 2. 通过Excel回写代码
@@ -29,9 +36,16 @@ npx ts-node dist/cli.ts gen --excel ./i18n.xlsx --out ./locales
 
 ### package.json 快捷命令
 ```
-"replace": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts replace --excel=i18n.xlsx --importPath='core/util/i18n' --fixLint=true",
-"scan": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts scan --dist=standard,core --out=./i18n.xlsx --gitlab=https:xxx --config=core/util/i18n/ReplaceConfig.js",
-"gen": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts gen --excel=./i18n.xlsx --out=core/util/i18n"
+"replace": "ts-node node_modules/hecom-i18n-tools/dist/cli.js replace --excel=i18n.xlsx --importPath='core/util/i18n' --fixLint=true",
+scan": "ts-node node_modules/hecom-i18n-tools/dist/cli.js scan --src=standard,core --out=./i18n.xlsx --gitlab=https:xxxx --config=core/util/i18n/scannerOptions.js",
+"gen": "ts-node node_modules/hecom-i18n-tools/dist/cli.js gen --excel=./i18n.xlsx --out=core/util/i18n"
+```
+
+
+## 特性
+```
+支持//@i18n-ignore-file，忽略扫描文件 
+//@i18n-ignore，忽略下一行
 ```
 
 
