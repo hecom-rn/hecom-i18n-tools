@@ -12,26 +12,26 @@
 ### 1. 扫描代码导出Excel
 
 ```sh
-npx ts-node src/cli.ts scan --src core --out ./i18n.xlsx --gitlab https://xxxx
+npx ts-node dist/cli.ts scan --dist core --out ./i18n.xlsx --gitlab https://xxxx
 ```
 
 ### 2. 通过Excel回写代码
 
 ```sh
-npx ts-node src/cli.ts replace --excel ./i18n.xlsx
+npx ts-node dist/cli.ts replace --excel ./i18n.xlsx
 ```
 
 ### 3. 通过Excel生成语言包
 
 ```sh
-npx ts-node src/cli.ts gen --excel ./i18n.xlsx --out ./locales
+npx ts-node dist/cli.ts gen --excel ./i18n.xlsx --out ./locales
 ```
 
 ### package.json 快捷命令
 ```
-"replace": "ts-node node_modules/hecom-i18n-tools/src/cli.ts replace --excel=i18n.xlsx --importPath='core/util/i18n' --fixLint=true",
-"scan": "ts-node node_modules/hecom-i18n-tools/src/cli.ts scan --src=standard,core --out=./i18n.xlsx --gitlab=https:xxx --config=core/util/i18n/ReplaceConfig.js",
-"gen": "ts-node node_modules/hecom-i18n-tools/src/cli.ts gen --excel=./i18n.xlsx --out=core/util/i18n"
+"replace": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts replace --excel=i18n.xlsx --importPath='core/util/i18n' --fixLint=true",
+"scan": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts scan --dist=standard,core --out=./i18n.xlsx --gitlab=https:xxx --config=core/util/i18n/ReplaceConfig.js",
+"gen": "ts-node node_modules/hecom-i18n-tools/dist/cli.ts gen --excel=./i18n.xlsx --out=core/util/i18n"
 ```
 
 
@@ -51,7 +51,7 @@ npx ts-node src/cli.ts gen --excel ./i18n.xlsx --out ./locales
 
 | 参数 | 必需 | 描述 |
 |------|------|------|
-| -s, --src | 是 | 源代码目录（支持多个，用逗号分隔） |
+| -s, --dist | 是 | 源代码目录（支持多个，用逗号分隔） |
 | -o, --out | 是 | 输出Excel路径 |
 | -g, --gitlab | 否 | GitLab仓库URL前缀 |
 | -c, --config | 否 | 配置文件路径 |
