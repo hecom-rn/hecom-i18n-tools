@@ -134,6 +134,17 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           results.push({ key, value, file: relPath, line, gitlab });
         }
       },
+      JSXText(path: NodePath<any>) {
+        const value = path.node.value && path.node.value.trim();
+        if (value && /[\u4e00-\u9fa5]/.test(value)) {
+          if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
+          const line = path.node.loc.start.line;
+          if (shouldIgnoreLine(line)) return;
+          const key = 'i18n_' + generateStableHash(value);
+          const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
+          results.push({ key, value, file: relPath, line, gitlab });
+        }
+      },
       TemplateLiteral(path: NodePath<any>) {
         if (path.node.loc) {
           // 将整个模板字符串作为一条处理，而不是拆分处理
