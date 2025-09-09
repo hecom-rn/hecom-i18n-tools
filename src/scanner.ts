@@ -29,6 +29,7 @@ function defaultGenerateStableHash(str: string): string {
 function extractStringsFromFile(filePath: string, options: ScanOptions = scanOptions, gitlabPrefix?: string): ScanResult[] {
   const { generateStableHash = defaultGenerateStableHash } = options;
   const code = fs.readFileSync(filePath, 'utf8');
+  const codeLines = code.split(/\r?\n/); // 用于调试实际行内容
   const results: ScanResult[] = [];
   const projectRoot = process.cwd();
   let relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/');
@@ -72,6 +73,60 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
     return ignoreLines.includes(line);
   }
 
+  // 收集所有testID相关的字符串位置，用于后续忽略
+  const testIdStringPositions = new Set<string>();
+
+  function collectTestIdStrings(ast: any) {
+    traverse(ast, {
+      JSXAttribute(path: NodePath<any>) {
+        if (path.node.name && path.node.name.name === 'testID') {
+          if (path.node.value && path.node.value.type === 'StringLiteral') {
+            // testID="value" 格式
+            const pos = `${path.node.value.start}-${path.node.value.end}`;
+            testIdStringPositions.add(pos);
+          } else if (path.node.value && path.node.value.type === 'JSXExpressionContainer') {
+            // testID={expression} 格式
+            const expr = path.node.value.expression;
+            if (expr.type === 'StringLiteral') {
+              const pos = `${expr.start}-${expr.end}`;
+              testIdStringPositions.add(pos);
+            } else if (expr.type === 'TemplateLiteral') {
+              // testID={`template`} 格式
+              const pos = `${expr.start}-${expr.end}`;
+              testIdStringPositions.add(pos);
+            } else if (expr.type === 'BinaryExpression') {
+              // 处理 testID={"str1" + "str2"} 格式，递归收集所有字符串字面量
+              function collectFromBinaryExpr(node: any) {
+                if (node.type === 'StringLiteral') {
+                  const pos = `${node.start}-${node.end}`;
+                  testIdStringPositions.add(pos);
+                } else if (node.type === 'BinaryExpression') {
+                  collectFromBinaryExpr(node.left);
+                  collectFromBinaryExpr(node.right);
+                }
+              }
+              collectFromBinaryExpr(expr);
+            }
+          }
+        }
+      },
+      ObjectProperty(path: NodePath<any>) {
+        // 处理 testID: "value" 格式
+        if (path.node.key && 
+            ((path.node.key.type === 'Identifier' && path.node.key.name === 'testID') ||
+             (path.node.key.type === 'StringLiteral' && path.node.key.value === 'testID'))) {
+          if (path.node.value && path.node.value.type === 'StringLiteral') {
+            const pos = `${path.node.value.start}-${path.node.value.end}`;
+            testIdStringPositions.add(pos);
+          } else if (path.node.value && path.node.value.type === 'TemplateLiteral') {
+            const pos = `${path.node.value.start}-${path.node.value.end}`;
+            testIdStringPositions.add(pos);
+          }
+        }
+      }
+    });
+  }
+
   try {
     const ast = babelParser.parse(code, {
       sourceType: 'unambiguous',
@@ -95,51 +150,32 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       ],
       ranges: true,
     });
+
+    // 首先收集所有testID相关的字符串位置
+    collectTestIdStrings(ast);
     traverse(ast as any, {
       StringLiteral(path: NodePath<any>) {
         if (path.node.loc && /[\u4e00-\u9fa5]/.test(path.node.value)) {
-          // 跳过注释内字符串
           if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
           
-          // 跳过被 i18n-ignore 注释标记的行
+          // 检查是否为testID相关的字符串，如果是则忽略
+          const pos = `${path.node.start}-${path.node.end}`;
+          if (testIdStringPositions.has(pos)) {
+            return;
+          }
+          
           if (shouldIgnoreLine(path.node.loc.start.line)) return;
-          
-          // 跳过JSX中testID属性的中文字符串
-          const parent = path.parent;
-          if (parent && parent.type === 'JSXAttribute' && 
-              parent.name && parent.name.name === 'testID') {
-            return;
-          }
-          
-          // 跳过嵌套在JSXExpressionContainer中的testID属性的中文字符串
-          if (parent && parent.type === 'JSXExpressionContainer') {
-            const grandParent = (parent as any).parent;
-            if (grandParent && grandParent.type === 'JSXAttribute' &&
-                grandParent.name && grandParent.name.name === 'testID') {
-              return;
-            }
-          }
-          
-          // 跳过对象属性testID的中文字符串
-          if (parent && parent.type === 'ObjectProperty' &&
-              parent.key && parent.key.type === 'Identifier' && parent.key.name === 'testID') {
-            return;
-          }
-          
           const value = path.node.value;
-          const line = path.node.loc.start.line;
-          // 使用稳定的哈希算法生成key，确保唯一性且不会太长
-          const key = 'i18n_' + generateStableHash(value);
-          const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
-          results.push({ key, value, file: relPath, line, gitlab });
-        }
-      },
-      JSXText(path: NodePath<any>) {
-        const value = path.node.value && path.node.value.trim();
-        if (value && /[\u4e00-\u9fa5]/.test(value)) {
-          if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
-          const line = path.node.loc.start.line;
-          if (shouldIgnoreLine(line)) return;
+          let line = path.node.loc.start.line;
+          const actualLine = codeLines[line - 1] || '';
+          const isCommentLine = actualLine.trim().startsWith('//') || actualLine.trim().startsWith('/*');
+          if (!isCommentLine && !actualLine.includes(value) && codeLines[line] && codeLines[line].includes(value)) {
+            line = line + 1;
+          }
+          if (value.length > 32767) {
+            console.warn(`[i18n-tools] 跳过超长文本: ${filePath}:${line} (${value.length} 字符)`);
+            return;
+          }
           const key = 'i18n_' + generateStableHash(value);
           const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
           results.push({ key, value, file: relPath, line, gitlab });
@@ -147,14 +183,18 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       },
       TemplateLiteral(path: NodePath<any>) {
         if (path.node.loc) {
-          // 将整个模板字符串作为一条处理，而不是拆分处理
+          // 检查是否为testID相关的模板字符串，如果是则忽略
+          if (path.node.start !== undefined && path.node.end !== undefined) {
+            const pos = `${path.node.start}-${path.node.end}`;
+            if (testIdStringPositions.has(pos)) {
+              console.log(`[i18n-tools] 忽略testID模板字符串`);
+              return;
+            }
+          }
+          
           let fullValue = '';
           let hasChinese = false;
-          
-          // 用于跟踪每种表达式类型的计数
           const exprTypeCount: Record<string, number> = {};
-          
-          // 构建完整的模板字符串值
           for (let i = 0; i < path.node.quasis.length; i++) {
             const quasi = path.node.quasis[i];
             const value = quasi.value.raw;
@@ -162,37 +202,67 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             if (/[\u4e00-\u9fa5]/.test(value)) {
               hasChinese = true;
             }
-            
-            // 添加表达式部分（如果有的话）
             if (i < path.node.expressions.length) {
               const expr = path.node.expressions[i];
-              // 跟踪每种表达式类型的使用次数
               if (!exprTypeCount[expr.type]) {
                 exprTypeCount[expr.type] = 0;
               }
               exprTypeCount[expr.type]++;
-              
-              // 使用类型和计数作为占位符，确保唯一性
               fullValue += `{{${expr.type}${exprTypeCount[expr.type]}}}`;
             }
           }
-          
-          // 如果整个模板字符串包含中文，则作为一个条目处理
           if (hasChinese) {
-            // 跳过注释内字符串（检查第一个quasi的位置）
             const firstQuasi = path.node.quasis[0];
             if (firstQuasi.start !== undefined && firstQuasi.end !== undefined && 
                 isInComment(firstQuasi.start, firstQuasi.end)) return;
-                
-            // 跳过被 i18n-ignore 注释标记的行
-            const line = path.node.loc.start.line;
+            let line = path.node.loc.start.line;
+            const actualLine = codeLines[line - 1] || '';
+            const isCommentLine = actualLine.trim().startsWith('//') || actualLine.trim().startsWith('/*');
+            if (!isCommentLine && !actualLine.includes(fullValue) && codeLines[line] && codeLines[line].includes(fullValue)) {
+              line = line + 1;
+            }
             if (shouldIgnoreLine(line)) return;
-                
-            // 使用稳定的哈希算法生成key，确保唯一性且不会太长
+            if (fullValue.length > 32767) {
+              console.warn(`[i18n-tools] 跳过超长模板文本: ${filePath}:${line} (${fullValue.length} 字符)`);
+              return;
+            }
             const key = 'i18n_' + generateStableHash(fullValue);
             const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
             results.push({ key, value: fullValue, file: relPath, line, gitlab });
           }
+        }
+      },
+      JSXText(path: NodePath<any>) {
+        // 只处理包含中文的 JSXText
+        const value = path.node.value;
+        if (/[\u4e00-\u9fa5]/.test(value)) {
+          if (!value.trim()) return;
+          // 精确推算内容实际所在行号
+          let line = path.node.loc?.start.line || 0;
+          // 统计 value 前的换行数，推算实际内容行
+          const lines = value.split('\n');
+          let offset = 0;
+          for (let i = 0; i < lines.length; i++) {
+            if (/[\u4e00-\u9fa5]/.test(lines[i])) {
+              offset = i;
+              break;
+            }
+          }
+          line = line + offset;
+          if (shouldIgnoreLine(line)) return;
+          if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
+          const actualLine = codeLines[line - 1] || '';
+          const isCommentLine = actualLine.trim().startsWith('//') || actualLine.trim().startsWith('/*');
+          if (!isCommentLine && !actualLine.includes(value.trim()) && codeLines[line] && codeLines[line].includes(value.trim())) {
+            line = line + 1;
+          }
+          if (value.length > 32767) {
+            console.warn(`[i18n-tools] 跳过超长JSX文本: ${filePath}:${line} (${value.length} 字符)`);
+            return;
+          }
+          const key = 'i18n_' + generateStableHash(value.trim());
+          const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
+          results.push({ key, value: value.trim(), file: relPath, line, gitlab });
         }
       }
     });
@@ -209,10 +279,20 @@ function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => v
   const fullPath = path.isAbsolute(dir) ? dir : path.join(process.cwd(), dir);
   
   fs.readdirSync(fullPath).forEach((f) => {
-    if (ignoreFiles.includes(f)) return;
     const p = path.join(fullPath, f);
-    if (fs.statSync(p).isDirectory()) walkDir(p, options, cb);
-    else if (/\.(js|ts|tsx)$/.test(f)) cb(p);
+    // 如果 ignoreFiles 中任意一项在路径中出现，则忽略（目录和文件都跳过）
+    if (ignoreFiles.some(ignore => p.includes(ignore))) return;
+    try {
+      if (fs.statSync(p).isDirectory()) {
+        // 跳过被 ignoreFiles 命中的目录
+        walkDir(p, options, cb);
+      } else if ((/\.(js|ts|tsx)$/.test(f)) && !/\.d\.ts$/.test(f)) {
+        cb(p);
+      }
+    } catch (e) {
+      // 跳过无法访问的文件或目录（如损坏的软链、缺失的依赖等）
+      // console.warn(`[i18n-tools] 跳过无法访问: ${p} (${e.message})`);
+    }
   });
 }
 
@@ -224,7 +304,8 @@ export function scanCommand(opts: any) {
   if (config) {
     try {
       const configPath = path.isAbsolute(config) ? config : path.join(process.cwd(), config);
-      configOptions = require(configPath);
+      const rawConfig = require(configPath);
+      configOptions = rawConfig.default || rawConfig;
       console.log(`[i18n-tools] 已加载配置文件: ${configPath}`);
     } catch (err) {
       console.error(`[i18n-tools] 加载配置文件失败: ${err}`);

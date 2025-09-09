@@ -114,6 +114,16 @@ export function replaceCommand(opts: any) {
           replaced = true;
         }
       },
+      JSXText(path) {
+        const value = path.node.value.trim();
+        if (value && valueKeyMap[value]) {
+          // 替换JSXText为JSXExpressionContainer包装的t()调用
+          const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[value])]);
+          const jsxExpressionContainer = t.jsxExpressionContainer(callExpression);
+          path.replaceWith(jsxExpressionContainer);
+          replaced = true;
+        }
+      },
       TemplateLiteral(path) {
         // 构建完整的模板字符串值，与 scanner.ts 中的处理保持一致
         let fullValue = '';
