@@ -1,0 +1,11 @@
+{
+  "name": "demo-project",
+  "version": "1.0.0",
+  "scripts": {
+    "i18n:scan": "hecom-i18n-tools scan -s src -o translations.xlsx",
+    "i18n:sync": "hecom-i18n-tools sync -e translations.xlsx -s src -r sync-report.md",
+    "i18n:replace": "hecom-i18n-tools replace -e translations.xlsx --importPath utils/i18n",
+    "i18n:gen": "hecom-i18n-tools gen -e translations.xlsx -o locales",
+    "i18n:full-sync": "npm run i18n:sync && npm run i18n:gen"
+  }
+}
