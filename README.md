@@ -1,52 +1,127 @@
-# hecom-i18n-tools
+# HECOM I18N Tools
 
-多项目（RN/JS/TS）国际化扫描、Excel导出/导入、语言包生成工具
+🌍 专为 React Native/React/TypeScript 项目设计的国际化工具
 
-[![npm version](https://badge.fury.io/js/hecom-i18n-tools.svg)](https://badge.fury.io/js/hecom-i18n-tools)
+[![npm version](https://img.shields.io/npm/v/hecom-i18n-tools.svg)](https://www.npmjs.com/package/hecom-i18n-tools)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+## ✨ 特性
 
+- 🔍 **自动扫描**: 智能识别代码中的中文文本
+- 🚫 **智能忽略**: 自动忽略 testID、注释等无需翻译的内容  
+- 🔄 **一键替换**: 自动将中文替换为 `t()` 函数调用
+- 📊 **Excel管理**: 使用 Excel 管理翻译，方便团队协作
+- 🔗 **GitLab集成**: 自动生成源码链接，快速定位
+- 📈 **增量更新**: 支持版本迭代的增量翻译管理
 
-## 用法
+## 🚀 快速开始
 
-### 1. 扫描代码导出Excel
+### 安装
+```bash
+npm install hecom-i18n-tools -D
+```
 
-```sh
-npx ts-node dist/cli.ts scan --dist core --out ./i18n.xlsx --gitlab https://xxxx
+### 基础用法
+```bash
+# 1. 扫描中文文本并生成 Excel
+hecom-i18n-tools scan -s 'src' -o 'i18n-result.xlsx'
 
-可以传入 scannerOptions，来自定义这三个方法
-interface ScanOptions {
-  translate?: (text: string) => string | undefined;
-  generateStableHash?: (str: string) => string;
-  ignoreFiles?: string[];
+# 2. 替换代码中的中文为 t() 调用
+hecom-i18n-tools replace --excel=i18n-result.xlsx --importPath='@/utils/i18n'
+
+# 3. 生成语言包文件
+hecom-i18n-tools gen
+```
+
+## 📋 完整示例
+
+### 转换前
+```jsx
+function App() {
+  return (
+    <View>
+      <Text>欢迎使用我们的应用</Text>
+      <Button title="确认提交" onPress={handleSubmit} />
+      <Text testID="测试标识">用户名</Text>  // testID 自动忽略
+    </View>
+  );
 }
 ```
 
-### 2. 通过Excel回写代码
+### 转换后  
+```jsx
+import { t } from '@/utils/i18n';
 
-```sh
-npx ts-node dist/cli.ts replace --excel ./i18n.xlsx
+function App() {
+  return (
+    <View>
+      <Text>{t("i18n_abc123def")}</Text>
+      <Button title={t("i18n_def456ghi")} onPress={handleSubmit} />
+      <Text testID="测试标识">{t("i18n_ghi789jkl")}</Text>
+    </View>
+  );
+}
 ```
 
-### 3. 通过Excel生成语言包
+### 生成的翻译文件
+| key | zh | en | file | line |
+|-----|----|----|------|------|
+| i18n_abc123def | 欢迎使用我们的应用 | Welcome to our app | src/App.tsx | 4 |
+| i18n_def456ghi | 确认提交 | Confirm | src/App.tsx | 5 |
+| i18n_ghi789jkl | 用户名 | Username | src/App.tsx | 6 |
 
-```sh
-npx ts-node dist/cli.ts gen --excel ./i18n.xlsx --out ./locales
+## 📖 详细文档
+
+- 📘 [完整使用指南](./USAGE.md) - 详细的功能说明和最佳实践
+- 🚀 [快速入门指南](./QUICKSTART.md) - 30秒上手教程
+- 👥 [团队协作流程](./WORKFLOW.md) - 多人协作的完整工作流程
+
+## 🔧 命令详解
+
+### scan - 扫描文本
+```bash
+hecom-i18n-tools scan [options]
+
+选项:
+  -s, --src <paths>         源码目录，支持多个路径
+  -o, --out <file>          输出 Excel 文件路径  
+  --gitlab <url>            GitLab 项目地址
+  --config <file>           配置文件路径
 ```
 
-### package.json 快捷命令
-```
-"replace": "ts-node node_modules/hecom-i18n-tools/dist/cli.js replace --excel=i18n.xlsx --importPath='core/util/i18n' --fixLint=true",
-scan": "ts-node node_modules/hecom-i18n-tools/dist/cli.js scan --src=standard,core --out=./i18n.xlsx --gitlab=https:xxxx --config=core/util/i18n/scannerOptions.js",
-"gen": "ts-node node_modules/hecom-i18n-tools/dist/cli.js gen --excel=./i18n.xlsx --out=core/util/i18n"
+### replace - 替换文本
+```bash
+hecom-i18n-tools replace [options]
+
+选项:
+  --excel <file>           Excel 翻译文件路径
+  --file <file>            只处理指定文件
+  --importPath <path>      i18n 导入路径
+  --fixLint               自动修复 ESLint
 ```
 
+### gen - 生成语言包
+```bash
+hecom-i18n-tools gen [options]
 
-## 特性
+选项:
+  --excel <file>           Excel 文件路径
+  --output <dir>           语言包输出目录
 ```
-支持//@i18n-ignore-file，忽略扫描文件 
-//@i18n-ignore，忽略下一行
-```
+
+## 📞 技术支持
+
+- 🐛 **问题反馈**: [GitHub Issues](https://github.com/hecom-rn/i18n-tools/issues)
+- 📖 **详细文档**: 查看项目内的 Markdown 文档
+- 💬 **技术讨论**: 联系项目维护团队
+
+## 📄 许可证
+
+MIT © HECOM
+
+---
+
+**让国际化变得简单高效！** 🌍
 
 
 ## Excel说明
