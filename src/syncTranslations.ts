@@ -14,9 +14,10 @@ interface TranslationRecord {
   ko?: string;
   file: string;
   line: number;
-  hash: string; // 内容哈希，用于精确匹配
-  context?: string; // 上下文信息
-  [lang: string]: string | number | undefined; // 允许number类型以支持line字段
+  hash: string;
+  context?: string;
+  status?: string;
+  [lang: string]: string | number | undefined; // 支持string和number类型
 }
 
 interface SyncResult {
@@ -37,8 +38,25 @@ class TranslationSyncer {
 
   // 生成文本的内容哈希（用于精确匹配）
   private generateContentHash(text: string, file: string): string {
-    const content = `${text}|${path.basename(file)}`;
-    return crypto.createHash('md5').update(content).digest('hex').substring(0, 12);
+    if (!text || typeof text !== 'string') {
+      console.warn('⚠️ 生成哈希时文本为空或非字符串:', text);
+      return 'empty_' + Date.now();
+    }
+    
+    if (!file || typeof file !== 'string') {
+      console.warn('⚠️ 生成哈希时文件路径为空或非字符串:', file);
+      file = 'unknown';
+    }
+    
+    try {
+      // 标准化文本内容（移除多余空白、统一换行符）
+      const normalizedText = text.trim().replace(/\s+/g, ' ');
+      const content = `${normalizedText}|${path.basename(file)}`;
+      return crypto.createHash('md5').update(content, 'utf8').digest('hex').substring(0, 12);
+    } catch (error: any) {
+      console.error('❌ 生成内容哈希失败:', error.message);
+      return 'error_' + Date.now();
+    }
   }
 
   // 从Excel读取现有翻译数据
@@ -75,10 +93,19 @@ class TranslationSyncer {
   private scanCurrentCode(srcPaths: string[]): TranslationRecord[] {
     const results: TranslationRecord[] = [];
     const self = this; // 保存this引用
+    let processedFiles = 0;
+    let totalFiles = 0;
 
     const scanFile = (filePath: string) => {
       try {
         const code = fs.readFileSync(filePath, 'utf8');
+        
+        // 跳过过大的文件（>1MB）
+        if (code.length > 1024 * 1024) {
+          console.warn(`⚠️ 跳过过大文件: ${filePath} (${(code.length / 1024 / 1024).toFixed(1)}MB)`);
+          return;
+        }
+        
         const codeLines = code.split(/\r?\n/);
         const relPath = path.relative(this.projectRoot, filePath).replace(/\\/g, '/');
 
@@ -108,6 +135,7 @@ class TranslationSyncer {
           }
         });
 
+        let textCount = 0;
         // 扫描中文文本
         traverse(ast, {
           StringLiteral(path: NodePath<any>) {
@@ -115,7 +143,9 @@ class TranslationSyncer {
               const pos = `${path.node.start}-${path.node.end}`;
               if (testIdPositions.has(pos)) return; // 忽略testID
 
-              const text = path.node.value;
+              const text = path.node.value.trim();
+              if (!text) return; // 跳过空文本
+
               const line = path.node.loc.start.line;
               const hash = self.generateContentHash(text, relPath);
               const context = self.extractContext(path, codeLines, line);
@@ -128,6 +158,7 @@ class TranslationSyncer {
                 hash,
                 context
               });
+              textCount++;
             }
           },
 
@@ -148,7 +179,7 @@ class TranslationSyncer {
                 }
               }
 
-              if (hasChinese) {
+              if (hasChinese && fullValue.trim()) {
                 const line = path.node.loc.start.line;
                 const hash = self.generateContentHash(fullValue, relPath);
                 const context = self.extractContext(path, codeLines, line);
@@ -161,6 +192,7 @@ class TranslationSyncer {
                   hash,
                   context
                 });
+                textCount++;
               }
             }
           },
@@ -181,11 +213,18 @@ class TranslationSyncer {
                 hash,
                 context
               });
+              textCount++;
             }
           }
         });
+
+        processedFiles++;
+        if (textCount > 0) {
+          console.log(`📄 ${relPath}: ${textCount}条文本`);
+        }
+
       } catch (e: any) {
-        console.warn(`解析文件失败: ${filePath} - ${e.message}`);
+        console.warn(`⚠️ 解析文件失败: ${filePath} - ${e.message}`);
       }
     };
 
@@ -193,23 +232,27 @@ class TranslationSyncer {
     const walkDir = (dir: string) => {
       if (!fs.existsSync(dir)) return;
       
-      fs.readdirSync(dir).forEach(file => {
+      const files = fs.readdirSync(dir);
+      files.forEach(file => {
         const fullPath = path.join(dir, file);
         const stat = fs.statSync(fullPath);
         
-        if (stat.isDirectory() && !['node_modules', '.git', 'dist', 'build'].includes(file)) {
+        if (stat.isDirectory() && !['node_modules', '.git', 'dist', 'build', '.next', 'coverage'].includes(file)) {
           walkDir(fullPath);
-        } else if (stat.isFile() && /\.(js|ts|tsx)$/.test(file) && !/\.d\.ts$/.test(file)) {
+        } else if (stat.isFile() && /\.(js|jsx|ts|tsx)$/.test(file) && !/\.d\.ts$/.test(file)) {
+          totalFiles++;
           scanFile(fullPath);
         }
       });
     };
 
+    console.log('📂 开始扫描源码文件...');
     srcPaths.forEach(srcPath => {
       const fullPath = path.isAbsolute(srcPath) ? srcPath : path.join(this.projectRoot, srcPath);
       walkDir(fullPath);
     });
 
+    console.log(`✅ 扫描完成: 处理${processedFiles}/${totalFiles}个文件，发现${results.length}条中文文本`);
     return results;
   }
 
@@ -250,15 +293,41 @@ class TranslationSyncer {
   public syncTranslations(srcPaths: string[]): SyncResult {
     console.log('🔄 开始同步翻译数据...');
 
+    // 输入验证
+    if (!srcPaths || srcPaths.length === 0) {
+      throw new Error('源代码路径不能为空');
+    }
+
+    // 验证源码路径是否存在
+    const validPaths = srcPaths.filter(srcPath => {
+      const fullPath = path.isAbsolute(srcPath) ? srcPath : path.join(this.projectRoot, srcPath);
+      const exists = fs.existsSync(fullPath);
+      if (!exists) {
+        console.warn(`⚠️ 源码路径不存在: ${srcPath}`);
+      }
+      return exists;
+    });
+
+    if (validPaths.length === 0) {
+      throw new Error('没有找到有效的源码路径');
+    }
+
+    console.log(`📂 扫描路径: ${validPaths.join(', ')}`);
+
     const existingTranslations = this.loadExistingTranslations();
-    const currentCodeData = this.scanCurrentCode(srcPaths);
+    const currentCodeData = this.scanCurrentCode(validPaths);
+
+    console.log(`📊 现有翻译: ${existingTranslations.length}条`);
+    console.log(`📊 当前代码: ${currentCodeData.length}条`);
 
     // 创建哈希映射表用于快速匹配
     const existingByHash = new Map<string, TranslationRecord>();
     const existingByText = new Map<string, TranslationRecord>();
 
     existingTranslations.forEach(item => {
-      existingByHash.set(item.hash, item);
+      if (item.hash) {
+        existingByHash.set(item.hash, item);
+      }
       existingByText.set(item.zh, item);
     });
 
@@ -320,51 +389,81 @@ class TranslationSyncer {
   public saveSyncedTranslations(syncResult: SyncResult, outputFile?: string) {
     const output = outputFile || this.masterFile;
     
-    // 合并所有数据
-    const allData = [
-      ...syncResult.matched,
-      ...syncResult.updated,
-      ...syncResult.newItems
-    ];
+    try {
+      // 合并所有数据
+      const allData = [
+        ...syncResult.matched,
+        ...syncResult.updated,
+        ...syncResult.newItems
+      ];
 
-    // 如果有缺失的项目，可以选择保留（标记为已删除）或完全移除
-    const missingWithFlag = syncResult.missing.map(item => ({
-      ...item,
-      status: 'DELETED', // 标记为已删除
-      file: `[DELETED] ${item.file}`,
-      line: 0
-    }));
+      // 如果有缺失的项目，可以选择保留（标记为已删除）或完全移除
+      const missingWithFlag = syncResult.missing.map(item => ({
+        ...item,
+        status: 'DELETED', // 标记为已删除
+        file: `[DELETED] ${item.file}`,
+        line: 0
+      }));
 
-    // 生成Excel数据
-    const wsData = [...allData, ...missingWithFlag].map(item => ({
-      key: item.key,
-      zh: item.zh,
-      en: item.en || '',
-      ja: item.ja || '',
-      ko: item.ko || '',
-      // 动态添加其他语言列
-      ...Object.keys(item).reduce((acc, key) => {
-        if (!['key', 'zh', 'en', 'ja', 'ko', 'file', 'line', 'hash', 'context', 'status'].includes(key) && 
-            typeof (item as any)[key] === 'string') {
-          acc[key] = (item as any)[key];
+      const finalData = [...allData, ...missingWithFlag];
+      
+      if (finalData.length === 0) {
+        console.warn('⚠️ 没有数据需要保存');
+        return;
+      }
+
+      // 生成Excel数据
+      const wsData = finalData.map(item => ({
+        key: item.key,
+        zh: item.zh,
+        en: item.en || '',
+        ja: item.ja || '',
+        ko: item.ko || '',
+        // 动态添加其他语言列
+        ...this.extractDynamicLanguages(item),
+        file: item.file,
+        line: item.line,
+        hash: item.hash,
+        context: item.context || '',
+        status: item.status || 'ACTIVE'
+      }));
+
+      // 创建备份
+      if (output === this.masterFile && fs.existsSync(this.masterFile)) {
+        const backupPath = `${this.masterFile}.backup.${Date.now()}`;
+        fs.copyFileSync(this.masterFile, backupPath);
+        console.log(`📁 已创建备份: ${backupPath}`);
+      }
+
+      // 保存到Excel
+      const wb = xlsx.utils.book_new();
+      const ws = xlsx.utils.json_to_sheet(wsData);
+      xlsx.utils.book_append_sheet(wb, ws, 'translations');
+      xlsx.writeFile(wb, output);
+
+      console.log(`✅ 同步完成！保存到: ${output}`);
+      console.log(`📊 统计: 匹配${syncResult.matched.length}条，更新${syncResult.updated.length}条，新增${syncResult.newItems.length}条，删除${syncResult.missing.length}条`);
+    } catch (error: any) {
+      console.error(`❌ 保存失败: ${output}`, error.message);
+      throw new Error(`保存同步结果失败: ${error.message}`);
+    }
+  }
+
+  // 提取动态语言字段
+  private extractDynamicLanguages(item: TranslationRecord): Record<string, string> {
+    const standardFields = ['key', 'zh', 'en', 'ja', 'ko', 'file', 'line', 'hash', 'context', 'status'];
+    const result: Record<string, string> = {};
+    
+    Object.keys(item).forEach(key => {
+      if (!standardFields.includes(key)) {
+        const value = (item as any)[key];
+        if (typeof value === 'string') {
+          result[key] = value;
         }
-        return acc;
-      }, {} as Record<string, string>),
-      file: item.file,
-      line: item.line,
-      hash: item.hash,
-      context: item.context || '',
-      status: item.status || 'ACTIVE'
-    }));
-
-    // 保存到Excel
-    const wb = xlsx.utils.book_new();
-    const ws = xlsx.utils.json_to_sheet(wsData);
-    xlsx.utils.book_append_sheet(wb, ws, 'translations');
-    xlsx.writeFile(wb, output);
-
-    console.log(`✅ 同步完成！保存到: ${output}`);
-    console.log(`📊 统计: 匹配${syncResult.matched.length}条，更新${syncResult.updated.length}条，新增${syncResult.newItems.length}条，删除${syncResult.missing.length}条`);
+      }
+    });
+    
+    return result;
   }
 
   // 生成同步报告
@@ -404,24 +503,64 @@ ${syncResult.missing.map(item =>
 // 命令行接口
 export async function syncCommand(options: {
   excel: string;
-  src: string[];
+  src: string | string[];
   output?: string;
   report?: string;
 }) {
-  const syncer = new TranslationSyncer(options.excel);
-  const syncResult = syncer.syncTranslations(options.src);
-  
-  // 保存同步后的数据
-  syncer.saveSyncedTranslations(syncResult, options.output);
-  
-  // 生成报告
-  if (options.report) {
-    const report = syncer.generateSyncReport(syncResult);
-    fs.writeFileSync(options.report, report, 'utf8');
-    console.log(`📝 同步报告已保存到: ${options.report}`);
+  try {
+    // 参数验证
+    if (!options.excel) {
+      throw new Error('Excel文件路径不能为空 (--excel)');
+    }
+
+    if (!options.src) {
+      throw new Error('源代码路径不能为空 (--src)');
+    }
+
+    // 处理src参数
+    let srcPaths: string[];
+    if (typeof options.src === 'string') {
+      srcPaths = options.src.includes(',') 
+        ? options.src.split(',').map(s => s.trim()).filter(Boolean)
+        : [options.src];
+    } else {
+      srcPaths = options.src;
+    }
+
+    if (srcPaths.length === 0) {
+      throw new Error('源代码路径不能为空');
+    }
+
+    // 验证Excel文件存在
+    if (!fs.existsSync(options.excel)) {
+      console.warn(`⚠️ Excel文件不存在: ${options.excel}，将创建新文件`);
+    }
+
+    console.log('🔄 同步参数:');
+    console.log(`  Excel文件: ${options.excel}`);
+    console.log(`  源码路径: ${srcPaths.join(', ')}`);
+    console.log(`  输出文件: ${options.output || '覆盖原文件'}`);
+    console.log(`  报告文件: ${options.report || 'sync-report.md'}`);
+    console.log('');
+
+    const syncer = new TranslationSyncer(options.excel);
+    const syncResult = syncer.syncTranslations(srcPaths);
+    
+    // 保存同步后的数据
+    syncer.saveSyncedTranslations(syncResult, options.output);
+    
+    // 生成报告
+    if (options.report) {
+      const report = syncer.generateSyncReport(syncResult);
+      fs.writeFileSync(options.report, report, 'utf8');
+      console.log(`📝 同步报告已保存到: ${options.report}`);
+    }
+    
+    return syncResult;
+  } catch (error: any) {
+    console.error(`❌ 同步失败: ${error.message}`);
+    process.exit(1);
   }
-  
-  return syncResult;
 }
 
 export default TranslationSyncer;

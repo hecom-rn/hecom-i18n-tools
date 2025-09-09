@@ -79,7 +79,9 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
   function collectTestIdStrings(ast: any) {
     traverse(ast, {
       JSXAttribute(path: NodePath<any>) {
-        if (path.node.name && path.node.name.name === 'testID') {
+        // 扩展识别更多RN测试相关属性
+        const testAttributes = ['testID', 'accessibilityLabel', 'accessibilityHint', 'nativeID'];
+        if (path.node.name && testAttributes.includes(path.node.name.name)) {
           if (path.node.value && path.node.value.type === 'StringLiteral') {
             // testID="value" 格式
             const pos = `${path.node.value.start}-${path.node.value.end}`;
@@ -111,10 +113,11 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
         }
       },
       ObjectProperty(path: NodePath<any>) {
-        // 处理 testID: "value" 格式
+        // 处理 RN 样式对象中的测试属性
+        const testProperties = ['testID', 'accessibilityLabel', 'accessibilityHint', 'nativeID'];
         if (path.node.key && 
-            ((path.node.key.type === 'Identifier' && path.node.key.name === 'testID') ||
-             (path.node.key.type === 'StringLiteral' && path.node.key.value === 'testID'))) {
+            ((path.node.key.type === 'Identifier' && testProperties.includes(path.node.key.name)) ||
+             (path.node.key.type === 'StringLiteral' && testProperties.includes(path.node.key.value)))) {
           if (path.node.value && path.node.value.type === 'StringLiteral') {
             const pos = `${path.node.value.start}-${path.node.value.end}`;
             testIdStringPositions.add(pos);
@@ -147,6 +150,14 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
         'logicalAssignment',
         'numericSeparator',
         'privateIn',
+        // React Native 特有支持
+        'flow',
+        'flowComments',
+        'asyncGenerators',
+        'functionBind',
+        'doExpressions',
+        'throwExpressions',
+        'partialApplication'
       ],
       ranges: true,
     });
@@ -280,13 +291,14 @@ function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => v
   
   fs.readdirSync(fullPath).forEach((f) => {
     const p = path.join(fullPath, f);
+    // 检查是否为默认忽略目录
     // 如果 ignoreFiles 中任意一项在路径中出现，则忽略（目录和文件都跳过）
     if (ignoreFiles.some(ignore => p.includes(ignore))) return;
     try {
       if (fs.statSync(p).isDirectory()) {
         // 跳过被 ignoreFiles 命中的目录
         walkDir(p, options, cb);
-      } else if ((/\.(js|ts|tsx)$/.test(f)) && !/\.d\.ts$/.test(f)) {
+      } else if ((/\.(js|jsx|ts|tsx|rn\.js|android\.js|ios\.js)$/.test(f)) && !/\.d\.ts$/.test(f)) {
         cb(p);
       }
     } catch (e) {

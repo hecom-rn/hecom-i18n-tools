@@ -51,6 +51,14 @@ export function replaceCommand(opts: any) {
           'optionalChaining',
           'nullishCoalescingOperator',
           'objectRestSpread',
+          // React Native 特有支持
+          'flow',
+          'flowComments',
+          'asyncGenerators',
+          'functionBind',
+          'doExpressions',
+          'throwExpressions',
+          'partialApplication'
         ],
       });
     } catch (e) {
@@ -91,7 +99,9 @@ export function replaceCommand(opts: any) {
         const source = path.node.source.value;
         const specifiers = path.node.specifiers;
         for (const specifier of specifiers) {
-          if (specifier.type === 'ImportSpecifier' && specifier.imported.name === 't') {
+          if (specifier.type === 'ImportSpecifier' && 
+              ((specifier.imported.type === 'Identifier' && specifier.imported.name === 't') ||
+               (specifier.imported.type === 'StringLiteral' && specifier.imported.value === 't'))) {
             hasTImport = true;
             break;
           }
@@ -104,6 +114,28 @@ export function replaceCommand(opts: any) {
         const v = path.node.value;
         if (valueKeyMap[v]) {
           const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]);
+          
+          // 检查是否在 StyleSheet.create 中，如果是则跳过
+          let parent = path.parent;
+          let isInStyleSheet = false;
+          while (parent) {
+            if (parent.type === 'CallExpression' && 
+                parent.callee.type === 'MemberExpression' &&
+                parent.callee.object.type === 'Identifier' && 
+                parent.callee.object.name === 'StyleSheet' &&
+                parent.callee.property.type === 'Identifier' && 
+                parent.callee.property.name === 'create') {
+              isInStyleSheet = true;
+              break;
+            }
+            parent = parent.parent;
+          }
+          
+          if (isInStyleSheet) {
+            console.warn(`⚠️ 跳过StyleSheet中的字符串: "${v}"`);
+            return;
+          }
+          
           // 检查父节点是否为 JSXAttribute
           if (path.parentPath.isJSXAttribute()) {
             // 在 JSX 属性中需要用 JSXExpressionContainer 包装
