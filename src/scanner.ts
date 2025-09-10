@@ -16,7 +16,7 @@ interface ScanResult {
 }
 
 interface ScanOptions {
-  translate?: (text: string) => string | undefined;
+  translate?: (text: string) => Promise<string | undefined>;
   generateStableHash?: (str: string) => string;
   ignoreFiles?: string[];
 }
@@ -308,7 +308,7 @@ function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => v
   });
 }
 
-export function scanCommand(opts: any) {
+export async function scanCommand(opts: any) {
   let { src, out, gitlab, config } = opts;
   
   // 从配置文件加载配置
@@ -327,29 +327,30 @@ export function scanCommand(opts: any) {
   // 支持 src 为字符串或数组
   if (!Array.isArray(src)) src = [src];
   const wb = xlsx.utils.book_new();
-  src.forEach((srcPath: string) => {
+  
+  for (const srcPath of src) {
     const all: ScanResult[] = [];
     walkDir(srcPath, configOptions, (file) => {
       all.push(...extractStringsFromFile(file, configOptions, gitlab));
     });
-    const wsData = all.map((row) => {
+    const wsData = await Promise.all(all.map(async (row) => {
       const { key, value, file, line, gitlab } = row;
       const link = gitlab ? (gitlab.includes('#L') ? gitlab : gitlab + '#L' + line) : '';
       return {
         gitlab: link ? { t: 's', l: { Target: link }, v: '链接' } : '',
         zh: value,
-        en: configOptions.translate?.(value) ?? undefined,
+        en: configOptions.translate ? await configOptions.translate(value) : undefined,
         file,
         line,
         key,
       };
-    });
+    }));
     const ws = xlsx.utils.json_to_sheet(wsData);
     // sheet 名取路径最后一段
     const sheetName = path.basename(srcPath);
     xlsx.utils.book_append_sheet(wb, ws, sheetName);
     console.log(`扫描完成，导出 ${all.length} 条，Sheet: ${sheetName}`);
-  });
+  }
   xlsx.writeFile(wb, out);
   console.log(`全部扫描完成，Excel: ${out}`);
 }

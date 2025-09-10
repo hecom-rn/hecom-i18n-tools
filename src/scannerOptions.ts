@@ -1,6 +1,6 @@
 export default {
     // 自定义翻译函数
-    translate(text: string) {
+    async translate(text: string) {
         // 这里可以实现真实的翻译逻辑
         // 例如调用翻译API
         return undefined;

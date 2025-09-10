@@ -18,12 +18,12 @@ program
   .requiredOption('-o, --out <out>', '输出Excel路径')
   .option('-g, --gitlab <gitlab>', 'GitLab仓库URL前缀')
   .option('-c, --config <config>', '配置文件路径')
-  .action((opts) => {
+  .action(async (opts) => {
     // 支持 --src=../../a,../../b 逗号分隔
     if (typeof opts.src === 'string' && opts.src.includes(',')) {
       opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
-    scanCommand(opts);
+    await scanCommand(opts);
   });
 
 
