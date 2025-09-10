@@ -5,7 +5,8 @@ import traverse, { NodePath } from '@babel/traverse';
 import xlsx from 'xlsx';
 import { generateGitlabUrl } from './gitlab';
 import crypto from 'crypto';
-import scanOptions from './scannerOptions'
+import scanOptions from './scannerOptions';
+
 
 interface ScanResult {
   key: string;
@@ -131,34 +132,43 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
   }
 
   try {
+    // 动态确定插件配置
+    const isTypeScript = /\.(ts|tsx)$/.test(filePath) || code.includes('import type') || code.includes('export type');
+    const isFlow = !isTypeScript && (code.includes('@flow') || code.includes('// @flow'));
+    
+    const plugins: any[] = [
+      'jsx',
+      'decorators-legacy',
+      'classProperties',
+      'classPrivateProperties',
+      'classPrivateMethods',
+      'dynamicImport',
+      'optionalChaining',
+      'nullishCoalescingOperator',
+      'objectRestSpread',
+      'exportDefaultFrom',
+      'exportNamespaceFrom',
+      'topLevelAwait',
+      'logicalAssignment',
+      'numericSeparator',
+      'privateIn',
+      'asyncGenerators',
+      'functionBind',
+      'doExpressions',
+      'throwExpressions',
+      'partialApplication'
+    ];
+
+    // 根据文件类型添加相应的类型系统插件
+    if (isTypeScript) {
+      plugins.push('typescript');
+    } else if (isFlow) {
+      plugins.push('flow', 'flowComments');
+    }
+
     const ast = babelParser.parse(code, {
       sourceType: 'unambiguous',
-      plugins: [
-        'jsx',
-        'typescript',
-        'decorators-legacy',
-        'classProperties',
-        'classPrivateProperties',
-        'classPrivateMethods',
-        'dynamicImport',
-        'optionalChaining',
-        'nullishCoalescingOperator',
-        'objectRestSpread',
-        'exportDefaultFrom',
-        'exportNamespaceFrom',
-        'topLevelAwait',
-        'logicalAssignment',
-        'numericSeparator',
-        'privateIn',
-        // React Native 特有支持
-        'flow',
-        'flowComments',
-        'asyncGenerators',
-        'functionBind',
-        'doExpressions',
-        'throwExpressions',
-        'partialApplication'
-      ],
+      plugins,
       ranges: true,
     });
 
@@ -288,6 +298,15 @@ function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => v
   // 如果dir是相对路径，则以当前工作目录为基准
   // 如果dir只是文件夹名称，则在当前工作目录下查找
   const fullPath = path.isAbsolute(dir) ? dir : path.join(process.cwd(), dir);
+  
+  // 检查是否是单个文件
+  if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+    const f = path.basename(fullPath);
+    if ((/\.(js|jsx|ts|tsx|rn\.js|android\.js|ios\.js)$/.test(f)) && !/\.d\.ts$/.test(f)) {
+      cb(fullPath);
+    }
+    return;
+  }
   
   fs.readdirSync(fullPath).forEach((f) => {
     const p = path.join(fullPath, f);
