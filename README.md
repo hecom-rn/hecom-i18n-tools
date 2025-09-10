@@ -21,6 +21,14 @@
 npm install hecom-i18n-tools -D
 ```
 
+### 使用 npx（无需安装）
+```bash
+# 直接使用 npx 运行，无需全局安装
+npx hecom-i18n-tools scan -s 'src' -o 'i18n-result.xlsx'
+npx hecom-i18n-tools replace --excel=i18n-result.xlsx --importPath='@/utils/i18n'
+npx hecom-i18n-tools gen
+```
+
 ### 基础用法
 ```bash
 # 1. 扫描中文文本并生成 Excel

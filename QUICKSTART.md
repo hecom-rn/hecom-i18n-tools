@@ -7,6 +7,13 @@
 npm install hecom-i18n-tools -D
 ```
 
+### 1.5 或者直接使用 npx（无需安装）
+```bash
+# 无需安装，直接使用
+npx hecom-i18n-tools scan -s 'src' -o 'i18n.xlsx'
+npx hecom-i18n-tools replace --excel=i18n.xlsx --importPath='@/utils/i18n'
+```
+
 ### 2. 添加脚本到 package.json
 ```json
 {

@@ -208,7 +208,7 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           if (path.node.start !== undefined && path.node.end !== undefined) {
             const pos = `${path.node.start}-${path.node.end}`;
             if (testIdStringPositions.has(pos)) {
-              console.log(`[i18n-tools] 忽略testID模板字符串`);
+              // console.log(`[i18n-tools] 忽略testID模板字符串`);
               return;
             }
           }
