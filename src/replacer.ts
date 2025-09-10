@@ -38,53 +38,117 @@ export function replaceCommand(opts: any) {
     let code = fs.readFileSync(absFile, 'utf8');
     let ast;
     try {
-      ast = babelParser.parse(code, {
-        sourceType: 'unambiguous',
-        plugins: [
-          'jsx',
-          'typescript',
-          'decorators-legacy',
-          'classProperties',
-          'classPrivateProperties',
-          'classPrivateMethods',
-          'dynamicImport',
-          'optionalChaining',
-          'nullishCoalescingOperator',
-          'objectRestSpread',
-          // React Native 特有支持
-          'flow',
-          'flowComments',
-          'asyncGenerators',
-          'functionBind',
-          'doExpressions',
-          'throwExpressions',
-          'partialApplication'
-        ],
-      });
-    } catch (e) {
-      console.warn(`Babel 解析失败，降级为正则替换: ${absFile}`);
-      // 检查是否已存在import语句
-      if (!code.includes(`import { t } from '${importPath}'`)) {
-        code = `import { t } from '${importPath}';\n` + code;
+      // 根据文件扩展名确定解析器插件
+      const ext = path.extname(absFile).toLowerCase();
+      const plugins: any[] = [
+        'jsx',
+        'decorators-legacy',
+        'classProperties',
+        'classPrivateProperties',
+        'classPrivateMethods',
+        'dynamicImport',
+        'optionalChaining',
+        'nullishCoalescingOperator',
+        'objectRestSpread',
+        'asyncGenerators',
+        'functionBind',
+        'exportDefaultFrom',
+        'exportNamespaceFrom',
+        'importMeta',
+        'topLevelAwait',
+        'numericSeparator',
+        'logicalAssignment',
+        'optionalCatchBinding',
+        'bigInt'
+      ];
+
+      // TypeScript 文件支持
+      if (ext === '.ts' || ext === '.tsx') {
+        plugins.push('typescript');
       }
-      fileMap[file].forEach((row) => {
-        const value = row.zh;
-        const reg = new RegExp(`(['"` + '`' + `])${value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\1`, 'g');
-        code = code.replace(reg, `t('${row.key}')`);
-      });
-      fs.writeFileSync(absFile, code, 'utf8');
-      console.log(`已处理: ${absFile}`);
       
-      // 对修改后的文件执行ESLint修复
-      if (fixLint) {
+      // Flow 支持
+      if (ext === '.js' || ext === '.jsx') {
+        plugins.push('flow', 'flowComments');
+      }
+
+      // 尝试多种解析策略
+      let parseOptions = {
+        sourceType: 'unambiguous' as 'unambiguous',
+        plugins,
+        allowImportExportEverywhere: true,
+        allowAwaitOutsideFunction: true,
+        allowReturnOutsideFunction: true,
+        allowSuperOutsideMethod: true,
+        allowUndeclaredExports: true,
+        strictMode: false,
+        ranges: false,
+        tokens: false
+      };
+
+      ast = babelParser.parse(code, parseOptions);
+    } catch (e) {
+      // 第二次尝试：使用更宽松的配置
+      try {
+        ast = babelParser.parse(code, {
+          sourceType: 'module',
+          plugins: ['jsx', 'typescript', 'flow', 'flowComments'],
+          allowImportExportEverywhere: true,
+          strictMode: false
+        });
+      } catch (e2) {
+        // 第三次尝试：作为脚本解析
         try {
-          execSync(`npx eslint "${absFile}" --fix`, { stdio: 'inherit' });
-          console.log(`已对 ${absFile} 执行ESLint修复`);
-        } catch (error) {
-          console.warn(`ESLint修复失败 ${absFile}: ${error.message}`);
+          ast = babelParser.parse(code, {
+            sourceType: 'script',
+            plugins: ['jsx'],
+            strictMode: false
+          });
+        } catch (e3) {
+          console.warn(`Babel 解析失败，降级为正则替换: ${absFile}`);
+          console.warn(`解析错误: ${e.message}`);
+          // 检查是否已存在import语句
+          if (!code.includes(`import { t } from '${importPath}'`)) {
+            code = `import { t } from '${importPath}';\n` + code;
+          }
+          
+          // 改进的正则替换逻辑
+          fileMap[file].forEach((row) => {
+            const value = row.zh;
+            const escapedValue = value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+            
+            // 1. 处理普通字符串字面量 (在 JSX 文本中)
+            const textReg = new RegExp(`(['"` + '`' + `])${escapedValue}\\1`, 'g');
+            code = code.replace(textReg, `{t('${row.key}')}`);
+            
+            // 2. 处理 JSX 属性中的字符串 (需要花括号)
+            const jsxAttrReg = new RegExp(`(\\w+\\s*=\\s*)(['"` + '`' + `])${escapedValue}\\2`, 'g');
+            code = code.replace(jsxAttrReg, `$1{t('${row.key}')}`);
+            
+            // 3. 处理已经在花括号中的字符串
+            const jsxExprReg = new RegExp(`(\\{\\s*)(['"` + '`' + `])${escapedValue}\\2(\\s*\\})`, 'g');
+            code = code.replace(jsxExprReg, `$1t('${row.key}')$3`);
+          });
+          
+          // 清理可能的重复花括号
+          code = code.replace(/\{\{t\(/g, '{t(');
+          code = code.replace(/t\(\)/g, 't()');
+          
+          fs.writeFileSync(absFile, code, 'utf8');
+          console.log(`已处理: ${absFile}`);
+          
+          // 对修改后的文件执行ESLint修复
+          if (fixLint) {
+            try {
+              execSync(`npx eslint "${absFile}" --fix`, { stdio: 'inherit' });
+              console.log(`已对 ${absFile} 执行ESLint修复`);
+            } catch (error) {
+              console.warn(`ESLint修复失败 ${absFile}: ${error.message}`);
+            }
+          }
+          return;
         }
       }
-      return;
     }
     const valueKeyMap: Record<string, string> = {};
     fileMap[file].forEach((row) => {
