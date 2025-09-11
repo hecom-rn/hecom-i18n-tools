@@ -51,7 +51,7 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
 
   // 查找 i18n-ignore 注释标记的行
   const ignoreLines: number[] = [];
-  const ignoreRegex = /i18n-ignore/;
+  const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
   let lineIndex = 0;
   let lineStart = 0;
   for (let i = 0; i <= code.length; i++) {
@@ -72,6 +72,24 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
   // 检查指定行是否应该被忽略
   function shouldIgnoreLine(line: number): boolean {
     return ignoreLines.includes(line);
+  }
+
+  // 检查 AST 节点的范围内是否有 i18n-ignore 注释
+  function shouldIgnoreNode(nodeStartLine: number, nodeEndLine: number): boolean {
+    // 检查节点范围内的所有行是否有 i18n-ignore 注释
+    for (let line = nodeStartLine; line <= nodeEndLine; line++) {
+      if (ignoreLines.includes(line)) {
+        return true;
+      }
+    }
+    
+    // 还要检查节点开始行的前一行是否有 i18n-ignore 注释
+    // 这是为了处理注释在前、字符串在后的情况
+    if (ignoreLines.includes(nodeStartLine - 1)) {
+      return true;
+    }
+    
+    return false;
   }
 
   // 收集所有testID相关的字符串位置，用于后续忽略
@@ -185,7 +203,10 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             return;
           }
           
-          if (shouldIgnoreLine(path.node.loc.start.line)) return;
+          // 检查字符串范围内是否有 i18n-ignore 注释
+          const startLine = path.node.loc.start.line;
+          const endLine = path.node.loc.end.line;
+          if (shouldIgnoreNode(startLine, endLine)) return;
           const value = path.node.value;
           let line = path.node.loc.start.line;
           const actualLine = codeLines[line - 1] || '';
@@ -237,12 +258,16 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             if (firstQuasi.start !== undefined && firstQuasi.end !== undefined && 
                 isInComment(firstQuasi.start, firstQuasi.end)) return;
             let line = path.node.loc.start.line;
+            const endLine = path.node.loc.end.line;
+            
+            // 检查整个模板字符串范围内是否有 i18n-ignore 注释
+            if (shouldIgnoreNode(line, endLine)) return;
+            
             const actualLine = codeLines[line - 1] || '';
             const isCommentLine = actualLine.trim().startsWith('//') || actualLine.trim().startsWith('/*');
             if (!isCommentLine && !actualLine.includes(fullValue) && codeLines[line] && codeLines[line].includes(fullValue)) {
               line = line + 1;
             }
-            if (shouldIgnoreLine(line)) return;
             if (fullValue.length > 32767) {
               console.warn(`[i18n-tools] 跳过超长模板文本: ${filePath}:${line} (${fullValue.length} 字符)`);
               return;
@@ -270,7 +295,12 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             }
           }
           line = line + offset;
-          if (shouldIgnoreLine(line)) return;
+          
+          // 检查JSX文本范围内是否有 i18n-ignore 注释
+          const startLine = path.node.loc?.start.line || 0;
+          const endLine = path.node.loc?.end.line || startLine;
+          if (shouldIgnoreNode(startLine, endLine)) return;
+          
           if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
           const actualLine = codeLines[line - 1] || '';
           const isCommentLine = actualLine.trim().startsWith('//') || actualLine.trim().startsWith('/*');
@@ -373,3 +403,6 @@ export async function scanCommand(opts: any) {
   xlsx.writeFile(wb, out);
   console.log(`全部扫描完成，Excel: ${out}`);
 }
+
+// 导出 extractStringsFromFile 函数以便测试
+export { extractStringsFromFile };
