@@ -12,13 +12,31 @@ export function replaceCommand(opts: any) {
   const { excel, file: onlyFile, importPath = 'core/util/i18n', fixLint = false } = opts;
   const projectRoot = process.cwd();
   const excelPath = path.isAbsolute(excel) ? excel : path.resolve(projectRoot, excel);
-  const wb = xlsx.readFile(excelPath);
+  
+  let wb;
+  try {
+    wb = xlsx.readFile(excelPath);
+  } catch (error) {
+    console.error(`❌ 读取Excel文件失败: ${excelPath}`);
+    console.error(`错误详情: ${error.message}`);
+    return;
+  }
+  
   // 合并所有 sheet 的内容
   let rows: any[] = [];
-  wb.SheetNames.forEach(sheetName => {
-    const ws = wb.Sheets[sheetName];
-    rows = rows.concat(xlsx.utils.sheet_to_json(ws));
-  });
+  try {
+    wb.SheetNames.forEach(sheetName => {
+      const ws = wb.Sheets[sheetName];
+      if (ws) {
+        rows = rows.concat(xlsx.utils.sheet_to_json(ws));
+      } else {
+        console.warn(`⚠️ Sheet "${sheetName}" 为空或无法解析`);
+      }
+    });
+  } catch (error) {
+    console.error(`❌ 解析Excel工作表失败: ${error.message}`);
+    return;
+  }
   const fileMap: Record<string, Array<any>> = {};
   rows.forEach((row: any) => {
     if (!fileMap[row.file]) fileMap[row.file] = [];
@@ -32,10 +50,18 @@ export function replaceCommand(opts: any) {
     }
     const absFile = path.resolve(projectRoot, file);
     if (!fs.existsSync(absFile)) {
-      console.warn(`文件不存在: ${absFile}，跳过`);
+      console.warn(`⚠️ 文件不存在: ${absFile}，跳过`);
       return;
     }
-    let code = fs.readFileSync(absFile, 'utf8');
+    
+    let code;
+    try {
+      code = fs.readFileSync(absFile, 'utf8');
+    } catch (error) {
+      console.error(`❌ 读取文件失败: ${absFile}`);
+      console.error(`错误详情: ${error.message}`);
+      return;
+    }
     let ast;
     try {
       // 根据文件扩展名确定解析器插件
@@ -134,8 +160,13 @@ export function replaceCommand(opts: any) {
           code = code.replace(/\{\{t\(/g, '{t(');
           code = code.replace(/t\(\)/g, 't()');
           
-          fs.writeFileSync(absFile, code, 'utf8');
-          console.log(`已处理: ${absFile}`);
+          try {
+            fs.writeFileSync(absFile, code, 'utf8');
+            console.log(`已处理: ${absFile}`);
+          } catch (writeError) {
+            console.error(`❌ 写入文件失败: ${absFile}: ${writeError.message}`);
+            return;
+          }
           
           // 对修改后的文件执行ESLint修复
           if (fixLint) {
@@ -150,10 +181,13 @@ export function replaceCommand(opts: any) {
         }
       }
     }
+    
+    // 构建值到键的映射
     const valueKeyMap: Record<string, string> = {};
     fileMap[file].forEach((row) => {
       valueKeyMap[row.zh] = row.key;
     });
+    
     let replaced = false;
     let hasTImport = false;
     
@@ -211,15 +245,21 @@ export function replaceCommand(opts: any) {
         }
       },
       JSXText(path) {
-        const value = path.node.value.trim();
-        if (value && valueKeyMap[value]) {
-          // 替换JSXText为JSXExpressionContainer包装的t()调用
-          const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[value])]);
-          const jsxExpressionContainer = t.jsxExpressionContainer(callExpression);
-          path.replaceWith(jsxExpressionContainer);
-          replaced = true;
-        }
-      },
+          try {
+            const value = path.node.value.trim();
+            if (value && valueKeyMap[value]) {
+              // 替换JSXText为JSXExpressionContainer包装的t()调用
+              const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[value])]);
+              const jsxExpressionContainer = t.jsxExpressionContainer(callExpression);
+              path.replaceWith(jsxExpressionContainer);
+              replaced = true;
+              console.log(`🔄 替换JSX文本: "${value}" -> t('${valueKeyMap[value]}')`);
+            }
+          } catch (jsxTextError) {
+            console.error(`❌ 处理JSX文本时出错: ${jsxTextError.message}`);
+            console.error(`JSX文本值: "${path.node.value}"`);
+          }
+        },
       TemplateLiteral(path) {
         // 构建完整的模板字符串值，与 scanner.ts 中的处理保持一致
         let fullValue = '';
@@ -305,6 +345,7 @@ export function replaceCommand(opts: any) {
         }
       },
     });
+    
     if (replaced) {
       // 如果有替换且没有t导入，则添加导入语句
       if (!hasTImport) {
@@ -315,9 +356,14 @@ export function replaceCommand(opts: any) {
         ast.program.body.unshift(importDeclaration);
       }
       
-      const output = generate(ast, {}, code).code;
-      fs.writeFileSync(absFile, output, 'utf8');
-      console.log(`已处理: ${absFile}`);
+      try {
+        const output = generate(ast, {}, code).code;
+        fs.writeFileSync(absFile, output, 'utf8');
+        console.log(`已处理: ${absFile}`);
+      } catch (generateError) {
+        console.error(`❌ 代码生成或文件写入失败: ${absFile}: ${generateError.message}`);
+        return;
+      }
       
       // 对修改后的文件执行ESLint修复
       if (fixLint) {
@@ -333,13 +379,20 @@ export function replaceCommand(opts: any) {
       if (!code.includes(`import { t } from '${importPath}'`) && !hasTImport) {
         code = `import { t } from '${importPath}';\n` + code;
       }
+      
       fileMap[file].forEach((row) => {
         const value = row.zh;
         const reg = new RegExp(`(['"` + '`' + `])${value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\1`, 'g');
         code = code.replace(reg, `t('${row.key}')`);
       });
-      fs.writeFileSync(absFile, code, 'utf8');
-      console.log(`已处理: ${absFile}`);
+      
+      try {
+        fs.writeFileSync(absFile, code, 'utf8');
+        console.log(`已处理: ${absFile}`);
+      } catch (writeError) {
+        console.error(`❌ 文件写入失败: ${absFile}: ${writeError.message}`);
+        return;
+      }
       
       // 对修改后的文件执行ESLint修复
       if (fixLint) {
