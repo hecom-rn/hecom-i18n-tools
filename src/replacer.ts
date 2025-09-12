@@ -211,10 +211,58 @@ export function replaceCommand(opts: any) {
       StringLiteral(path) {
         const v = path.node.value;
         if (valueKeyMap[v]) {
+          // 检查是否在 TypeScript 类型注解中
+          let parent = path.parent;
+          let isInTypeAnnotation = false;
+          
+          // 检查父节点类型，避免替换 TypeScript 类型相关的字符串
+          while (parent) {
+            if (parent.type && (
+              parent.type === 'TSLiteralType' || // 字面量类型
+              parent.type === 'TSUnionType' || // 联合类型
+              parent.type === 'TSIntersectionType' || // 交叉类型
+              parent.type === 'TSTypeAnnotation' || // 类型注解
+              parent.type === 'TSTypeReference' || // 类型引用
+              parent.type === 'TSTypeLiteral' || // 类型字面量
+              parent.type === 'TSPropertySignature' || // 属性签名
+              parent.type === 'TSMethodSignature' || // 方法签名
+              parent.type === 'TSInterfaceDeclaration' || // 接口声明
+              parent.type === 'TSTypeAliasDeclaration' || // 类型别名声明
+              (parent.type === 'TSPropertySignature' && parent.typeAnnotation) // 属性类型注解
+            )) {
+              isInTypeAnnotation = true;
+              break;
+            }
+            // 特殊检查：如果在函数或方法的返回类型注解中
+            if (parent.type === 'Function' || parent.type === 'ArrowFunctionExpression' || 
+                parent.type === 'FunctionDeclaration' || parent.type === 'FunctionExpression' ||
+                parent.type === 'ObjectMethod') {
+              // 检查是否在 returnType 中
+              let current = path.node;
+              let currentParent = path.parent;
+              while (currentParent && currentParent !== parent) {
+                if (currentParent.type === 'TSTypeAnnotation' && 
+                    parent.returnType && parent.returnType === currentParent) {
+                  isInTypeAnnotation = true;
+                  break;
+                }
+                current = currentParent;
+                currentParent = currentParent.parent;
+              }
+              if (isInTypeAnnotation) break;
+            }
+            parent = parent.parent;
+          }
+          
+          if (isInTypeAnnotation) {
+            console.warn(`⚠️ 跳过TypeScript类型注解中的字符串: "${v}"`);
+            return;
+          }
+          
           const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]);
           
           // 检查是否在 StyleSheet.create 中，如果是则跳过
-          let parent = path.parent;
+          parent = path.parent;
           let isInStyleSheet = false;
           while (parent) {
             if (parent.type === 'CallExpression' && 
@@ -261,6 +309,54 @@ export function replaceCommand(opts: any) {
           }
         },
       TemplateLiteral(path) {
+        // 检查是否在 TypeScript 类型注解中
+        let parent = path.parent;
+        let isInTypeAnnotation = false;
+        
+        // 检查父节点类型，避免替换 TypeScript 类型相关的模板字符串
+        while (parent) {
+          if (parent.type && (
+            parent.type === 'TSLiteralType' || // 字面量类型
+            parent.type === 'TSUnionType' || // 联合类型
+            parent.type === 'TSIntersectionType' || // 交叉类型
+            parent.type === 'TSTypeAnnotation' || // 类型注解
+            parent.type === 'TSTypeReference' || // 类型引用
+            parent.type === 'TSTypeLiteral' || // 类型字面量
+            parent.type === 'TSPropertySignature' || // 属性签名
+            parent.type === 'TSMethodSignature' || // 方法签名
+            parent.type === 'TSInterfaceDeclaration' || // 接口声明
+            parent.type === 'TSTypeAliasDeclaration' || // 类型别名声明
+            (parent.type === 'TSPropertySignature' && parent.typeAnnotation) // 属性类型注解
+          )) {
+            isInTypeAnnotation = true;
+            break;
+          }
+          // 特殊检查：如果在函数或方法的返回类型注解中
+          if (parent.type === 'Function' || parent.type === 'ArrowFunctionExpression' || 
+              parent.type === 'FunctionDeclaration' || parent.type === 'FunctionExpression' ||
+              parent.type === 'ObjectMethod') {
+            // 检查是否在 returnType 中
+            let current = path.node;
+            let currentParent = path.parent;
+            while (currentParent && currentParent !== parent) {
+              if (currentParent.type === 'TSTypeAnnotation' && 
+                  parent.returnType && parent.returnType === currentParent) {
+                isInTypeAnnotation = true;
+                break;
+              }
+              current = currentParent;
+              currentParent = currentParent.parent;
+            }
+            if (isInTypeAnnotation) break;
+          }
+          parent = parent.parent;
+        }
+        
+        if (isInTypeAnnotation) {
+          console.warn(`⚠️ 跳过TypeScript类型注解中的模板字符串`);
+          return;
+        }
+        
         // 构建完整的模板字符串值，与 scanner.ts 中的处理保持一致
         let fullValue = '';
         const expressions = [];
