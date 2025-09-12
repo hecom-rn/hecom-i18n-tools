@@ -272,7 +272,6 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           }
           
           if (isInConsole) {
-            console.warn(`⚠️ 跳过console调用中的模板字符串`);
             return;
           }
           
