@@ -168,13 +168,13 @@ export function replaceCommand(opts: any) {
             return;
           }
           
-          // 对修改后的文件执行ESLint修复
+          // 对修改后的文件执行Prettier格式化
           if (fixLint) {
             try {
-              execSync(`npx eslint "${absFile}" --fix`, { stdio: 'inherit' });
-              console.log(`已对 ${absFile} 执行ESLint修复`);
+              execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
+              console.log(`已对 ${absFile} 执行Prettier格式化`);
             } catch (error) {
-              console.warn(`ESLint修复失败 ${absFile}: ${error.message}`);
+              console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
             }
           }
           return;
@@ -461,13 +461,13 @@ export function replaceCommand(opts: any) {
         return;
       }
       
-      // 对修改后的文件执行ESLint修复
+      // 对修改后的文件执行Prettier格式化
       if (fixLint) {
         try {
-          execSync(`npx eslint "${absFile}" --fix`, { stdio: 'inherit' });
-          console.log(`已对 ${absFile} 执行ESLint修复`);
+          execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
+          console.log(`已对 ${absFile} 执行Prettier格式化`);
         } catch (error) {
-          console.warn(`ESLint修复失败 ${absFile}: ${error.message}`);
+          console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
         }
       }
     } else {
@@ -490,13 +490,13 @@ export function replaceCommand(opts: any) {
         return;
       }
       
-      // 对修改后的文件执行ESLint修复
+      // 对修改后的文件执行Prettier格式化
       if (fixLint) {
         try {
-          execSync(`npx eslint "${absFile}" --fix`, { stdio: 'inherit' });
-          console.log(`已对 ${absFile} 执行ESLint修复`);
+          execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
+          console.log(`已对 ${absFile} 执行Prettier格式化`);
         } catch (error) {
-          console.warn(`ESLint修复失败 ${absFile}: ${error.message}`);
+          console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
         }
       }
     }
