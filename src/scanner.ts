@@ -203,6 +203,27 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             return;
           }
           
+          // 检查是否在 console 方法调用中，如果是则忽略
+          let currentPath = path.parentPath;
+          let isInConsole = false;
+          while (currentPath) {
+            if (currentPath.isCallExpression() && 
+                currentPath.node.callee.type === 'MemberExpression' &&
+                currentPath.node.callee.object.type === 'Identifier' && 
+                currentPath.node.callee.object.name === 'console' &&
+                currentPath.node.callee.property.type === 'Identifier' && 
+                ['log', 'warn', 'error', 'info', 'debug', 'trace'].includes(currentPath.node.callee.property.name)) {
+              isInConsole = true;
+              break;
+            }
+            currentPath = currentPath.parentPath;
+          }
+          
+          if (isInConsole) {
+            console.warn(`⚠️ 跳过console调用中的字符串: "${path.node.value}"`);
+            return;
+          }
+          
           // 检查字符串范围内是否有 i18n-ignore 注释
           const startLine = path.node.loc.start.line;
           const endLine = path.node.loc.end.line;
@@ -232,6 +253,27 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
               // console.log(`[i18n-tools] 忽略testID模板字符串`);
               return;
             }
+          }
+          
+          // 检查是否在 console 方法调用中，如果是则忽略
+          let currentPath = path.parentPath;
+          let isInConsole = false;
+          while (currentPath) {
+            if (currentPath.isCallExpression() && 
+                currentPath.node.callee.type === 'MemberExpression' &&
+                currentPath.node.callee.object.type === 'Identifier' && 
+                currentPath.node.callee.object.name === 'console' &&
+                currentPath.node.callee.property.type === 'Identifier' && 
+                ['log', 'warn', 'error', 'info', 'debug', 'trace'].includes(currentPath.node.callee.property.name)) {
+              isInConsole = true;
+              break;
+            }
+            currentPath = currentPath.parentPath;
+          }
+          
+          if (isInConsole) {
+            console.warn(`⚠️ 跳过console调用中的模板字符串`);
+            return;
           }
           
           let fullValue = '';
