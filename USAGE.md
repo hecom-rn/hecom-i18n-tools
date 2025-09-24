@@ -254,6 +254,31 @@ module.exports = {
 hecom-i18n-tools scan -s 'src' -o 'result.xlsx' --config=i18n.config.js
 ```
 
+### 忽略特定日志调用（新增）
+
+默认忽略以下日志中的中文：`console.*`、`UnionLog.*`（log / warn / error / info / debug / trace / verbose / fatal）。
+
+你可以在配置中追加自定义日志（例如 `Sentry.captureMessage`）：
+
+```js
+// i18n.config.js
+module.exports = {
+  ignoreLogObjects: ['Sentry'],
+  ignoreLogMethods: ['captureMessage']
+};
+```
+
+说明：
+- 配置是“追加”模式，不会覆盖默认集合。
+- 只要匹配到  对象.方法(...)  形式，其参数里的中文都会被忽略。
+- 如果你需要忽略多个 SDK，例如 NewRelic、CustomLogger：
+```js
+module.exports = {
+  ignoreLogObjects: ['Sentry','NewRelic','CustomLogger'],
+  ignoreLogMethods: ['captureMessage','recordError','track']
+};
+```
+
 ### 忽略特定文本
 
 #### 方法 1: 行级忽略

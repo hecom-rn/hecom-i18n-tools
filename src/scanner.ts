@@ -20,6 +20,10 @@ interface ScanOptions {
   translate?: (text: string) => Promise<string | undefined>;
   generateStableHash?: (str: string) => string;
   ignoreFiles?: string[];
+  // 新增：可配置需要忽略的日志对象（例如 ['Sentry']）
+  ignoreLogObjects?: string[];
+  // 新增：可配置需要忽略的方法名（例如 ['captureMessage']）
+  ignoreLogMethods?: string[];
 }
 
 // 默认哈希生成函数
@@ -192,6 +196,39 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
 
     // 首先收集所有testID相关的字符串位置
     collectTestIdStrings(ast);
+
+    // 忽略的日志对象（包括内置 console 和自定义 UnionLog）
+    const ignoredLogObjects = new Set<string>(['console', 'UnionLog']);
+    const ignoredLogMethods = new Set<string>(['log','warn','error','info','debug','trace','verbose','fatal']);
+
+    // 读取配置中的附加忽略日志对象与方法
+    if (options.ignoreLogObjects && Array.isArray(options.ignoreLogObjects)) {
+      for (const o of options.ignoreLogObjects) {
+        if (o && typeof o === 'string') ignoredLogObjects.add(o);
+      }
+    }
+    if (options.ignoreLogMethods && Array.isArray(options.ignoreLogMethods)) {
+      for (const m of options.ignoreLogMethods) {
+        if (m && typeof m === 'string') ignoredLogMethods.add(m);
+      }
+    }
+
+    function isInIgnoredLogCall(p: NodePath<any>): boolean {
+      let current: NodePath<any> | null = p.parentPath;
+      while (current) {
+        if (current.isCallExpression()) {
+          const callee: any = current.node.callee;
+            if (callee && callee.type === 'MemberExpression' &&
+                callee.object && callee.object.type === 'Identifier' && ignoredLogObjects.has(callee.object.name) &&
+                callee.property && callee.property.type === 'Identifier' && ignoredLogMethods.has(callee.property.name)) {
+              return true;
+            }
+        }
+        current = current.parentPath;
+      }
+      return false;
+    }
+
     traverse(ast as any, {
       StringLiteral(path: NodePath<any>) {
         if (path.node.loc && /[\u4e00-\u9fa5]/.test(path.node.value)) {
@@ -203,24 +240,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             return;
           }
           
-          // 检查是否在 console 方法调用中，如果是则忽略
-          let currentPath = path.parentPath;
-          let isInConsole = false;
-          while (currentPath) {
-            if (currentPath.isCallExpression() && 
-                currentPath.node.callee.type === 'MemberExpression' &&
-                currentPath.node.callee.object.type === 'Identifier' && 
-                currentPath.node.callee.object.name === 'console' &&
-                currentPath.node.callee.property.type === 'Identifier' && 
-                ['log', 'warn', 'error', 'info', 'debug', 'trace'].includes(currentPath.node.callee.property.name)) {
-              isInConsole = true;
-              break;
-            }
-            currentPath = currentPath.parentPath;
-          }
-          
-          if (isInConsole) {
-            console.warn(`⚠️ 跳过console调用中的字符串: "${path.node.value}"`);
+          // 检查是否在需要忽略的日志调用中（console / UnionLog）
+          if (isInIgnoredLogCall(path)) {
             return;
           }
           
@@ -255,23 +276,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             }
           }
           
-          // 检查是否在 console 方法调用中，如果是则忽略
-          let currentPath = path.parentPath;
-          let isInConsole = false;
-          while (currentPath) {
-            if (currentPath.isCallExpression() && 
-                currentPath.node.callee.type === 'MemberExpression' &&
-                currentPath.node.callee.object.type === 'Identifier' && 
-                currentPath.node.callee.object.name === 'console' &&
-                currentPath.node.callee.property.type === 'Identifier' && 
-                ['log', 'warn', 'error', 'info', 'debug', 'trace'].includes(currentPath.node.callee.property.name)) {
-              isInConsole = true;
-              break;
-            }
-            currentPath = currentPath.parentPath;
-          }
-          
-          if (isInConsole) {
+          // 忽略 console / UnionLog 等日志调用中的模板字符串
+          if (isInIgnoredLogCall(path)) {
             return;
           }
           

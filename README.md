@@ -168,3 +168,15 @@ MIT © HECOM
 |------|------|------|
 | -e, --excel | 是 | Excel文件路径 |
 | -o, --out | 是 | 输出目录 |
+
+## 🛠 可配置日志忽略
+
+扫描时默认会忽略以下日志对象/方法中的中文：
+
+- 对象：`console`, `UnionLog`
+- 方法：`log`, `warn`, `error`, `info`, `debug`, `trace`, `verbose`, `fatal`
+
+现在可通过配置文件追加自定义日志（例如忽略 `Sentry.captureMessage` 中的中文）：
+
+
+> 提示：配置项是“追加”而不是“覆盖”，仍会保留默认忽略的 console/UnionLog 及其方法。

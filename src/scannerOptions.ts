@@ -14,4 +14,8 @@ export default {
 
     // 自定义忽略文件列表
     ignoreFiles: [] as string[],
+    // 追加：自定义忽略日志对象，如 ['Sentry']
+    ignoreLogObjects: [] as string[],
+    // 追加：自定义忽略日志方法，如 ['captureMessage']
+    ignoreLogMethods: [] as string[],
 };
