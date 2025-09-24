@@ -4,6 +4,7 @@ import { scanCommand } from './scanner';
 import { replaceCommand } from './replacer';
 import { genCommand } from './i18nGenerator';
 import { syncCommand } from './syncTranslations';
+import { scanStaticConstsCommand } from './staticConstsScanner';
 
 const program = new Command();
 program
@@ -58,6 +59,19 @@ program
       opts.src = [opts.src];
     }
     syncCommand(opts);
+  });
+
+program
+  .command('static-consts')
+  .description('扫描含中文的全局 const 静态字符串或纯中文字符串数组')
+  .requiredOption('-s, --src <src>', '源代码目录或文件，支持逗号分隔')
+  .option('-o, --out <out>', '输出 CSV 文件路径（不填则打印到控制台）')
+  .option('-c, --config <config>', '配置文件（复用 ignoreFiles）')
+  .action((opts) => {
+    if (typeof opts.src === 'string' && opts.src.includes(',')) {
+      opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+    scanStaticConstsCommand(opts);
   });
 
 program.parse(process.argv);
