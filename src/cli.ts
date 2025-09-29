@@ -36,6 +36,7 @@ program
   .option('-f, --file <file>', '仅处理指定文件')
   .option('-l, --fixLint <fixLint>', '是否修复lint')
   .option('-p, --prettier-config <prettierConfig>', '指定 .prettierrc.js 配置文件路径（可选）')
+  .option('--method-blank-line <methodBlankLine>', '是否在类方法之间自动插入空行 (更快的格式微调，替代 eslint fix)', 'false')
   .action(replaceCommand);
 
 program
