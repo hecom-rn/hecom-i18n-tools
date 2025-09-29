@@ -8,8 +8,102 @@ import traverse from '@babel/traverse';
 import generate from '@babel/generator';
 import * as t from '@babel/types';
 
+// ----------------------------- 工具函数 -----------------------------
+const TS_TYPE_NODE_SET = new Set([
+  'TSLiteralType','TSUnionType','TSIntersectionType','TSTypeAnnotation','TSTypeReference',
+  'TSTypeLiteral','TSPropertySignature','TSMethodSignature','TSInterfaceDeclaration','TSTypeAliasDeclaration'
+]);
+
+function escapeRegExp(str: string) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildParseOptions(plugins: any[]) {
+  return {
+    sourceType: 'unambiguous' as const,
+    plugins,
+    allowImportExportEverywhere: true,
+    allowAwaitOutsideFunction: true,
+    allowReturnOutsideFunction: true,
+    allowSuperOutsideMethod: true,
+    allowUndeclaredExports: true,
+    strictMode: false,
+    ranges: false,
+    tokens: false
+  };
+}
+
+function isInTsType(path: any): boolean {
+  return !!path.findParent((p: any) => TS_TYPE_NODE_SET.has(p.node.type));
+}
+
+function isInFunctionReturnType(path: any): boolean {
+  const fnPath = path.findParent((p: any) => (
+    p.isFunctionDeclaration?.() || p.isFunctionExpression?.() || p.isArrowFunctionExpression?.() || p.isObjectMethod?.()
+  ));
+  if (!fnPath) return false;
+  // 查找当前路径是否位于函数的 returnType 注解中
+  const returnType = (fnPath.node as any).returnType;
+  if (!returnType) return false;
+  return !!path.findParent((p: any) => p.node === returnType);
+}
+
+function isInStyleSheetCreate(path: any): boolean {
+  return !!path.findParent((p: any) => {
+    const node = p.node;
+    return node && node.type === 'CallExpression' &&
+      node.callee && node.callee.type === 'MemberExpression' &&
+      node.callee.object.type === 'Identifier' && node.callee.object.name === 'StyleSheet' &&
+      node.callee.property.type === 'Identifier' && node.callee.property.name === 'create';
+  });
+}
+
+interface TemplateFullValueResult {
+  fullValue: string;
+  expressions: any[];
+  typeIndexMap: string[]; // 记录顺序 (类型+序号) 用于参数对象 key
+}
+
+function buildTemplateFullValue(node: any): TemplateFullValueResult {
+  let fullValue = '';
+  const expressions: any[] = [];
+  const exprTypeCount: Record<string, number> = {};
+  const typeIndexMap: string[] = [];
+  for (let i = 0; i < node.quasis.length; i++) {
+    const quasi = node.quasis[i];
+    fullValue += quasi.value.raw;
+    if (i < node.expressions.length) {
+      const expr = node.expressions[i];
+      expressions.push(expr);
+      exprTypeCount[expr.type] = (exprTypeCount[expr.type] || 0) + 1;
+      const placeholder = `{{${expr.type}${exprTypeCount[expr.type]}}}`;
+      typeIndexMap.push(`${expr.type}${exprTypeCount[expr.type]}`);
+      fullValue += placeholder;
+    }
+  }
+  return { fullValue, expressions, typeIndexMap };
+}
+
+function shouldSkipLiteral(path: any): boolean {
+  if (isInTsType(path)) return true;
+  if (isInFunctionReturnType(path)) return true;
+  if (isInStyleSheetCreate(path)) return true;
+  return false;
+}
+
 export function replaceCommand(opts: any) {
-  const { excel, file: onlyFile, importPath = 'core/util/i18n', fixLint = false } = opts;
+  const { 
+    excel,
+    file: onlyFile,
+    importPath = 'core/util/i18n',
+    fixLint = false,
+    // 新增：可传入 Prettier 配置文件路径（相对或绝对）
+    prettierConfigPath,
+    prettierConfig, // CLI 传入别名
+    // 预留：额外 CLI 参数（数组）
+    prettierExtraArgs = [] as string[]
+  } = opts;
+  const effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
   const projectRoot = process.cwd();
   const excelPath = path.isAbsolute(excel) ? excel : path.resolve(projectRoot, excel);
   
@@ -43,6 +137,9 @@ export function replaceCommand(opts: any) {
     fileMap[row.file].push(row);
   });
   const files = onlyFile ? [onlyFile] : Object.keys(fileMap);
+
+  const prettierTargets: string[] = [];
+
   files.forEach((file) => {
     if (!fileMap[file]) {
       console.warn(`Excel中未找到与 ${file} 匹配的行，跳过`);
@@ -62,6 +159,19 @@ export function replaceCommand(opts: any) {
       console.error(`错误详情: ${error.message}`);
       return;
     }
+    // 预筛：如果源码中不包含任意翻译值，直接跳过复杂 AST 解析
+    // 但：含有占位符 {{...}} 的模板字符串不能用简单子串判断，否则会漏（例如 你好，{{Identifier1}}! 与源码 你好，${name}!）
+    const candidates = fileMap[file];
+    const candidateValues = candidates.map(r => r.zh).filter(Boolean);
+    const hasPlaceholderStyle = candidateValues.some(v => /\{\{.+?\}\}/.test(v));
+    let possibleHits: string[] = [];
+    if (!hasPlaceholderStyle) {
+      possibleHits = candidateValues.filter(v => v && code.includes(v));
+      if (possibleHits.length === 0) {
+        return; // 无需处理
+      }
+    }
+
     let ast;
     try {
       // 根据文件扩展名确定解析器插件
@@ -99,20 +209,7 @@ export function replaceCommand(opts: any) {
       }
 
       // 尝试多种解析策略
-      let parseOptions = {
-        sourceType: 'unambiguous' as 'unambiguous',
-        plugins,
-        allowImportExportEverywhere: true,
-        allowAwaitOutsideFunction: true,
-        allowReturnOutsideFunction: true,
-        allowSuperOutsideMethod: true,
-        allowUndeclaredExports: true,
-        strictMode: false,
-        ranges: false,
-        tokens: false
-      };
-
-      ast = babelParser.parse(code, parseOptions);
+      ast = babelParser.parse(code, buildParseOptions(plugins));
     } catch (e) {
       // 第二次尝试：使用更宽松的配置
       try {
@@ -138,20 +235,15 @@ export function replaceCommand(opts: any) {
             code = `import { t } from '${importPath}';\n` + code;
           }
           
-          // 改进的正则替换逻辑
+          // 改进的正则替换逻辑（仅处理实际包含的候选）
           fileMap[file].forEach((row) => {
             const value = row.zh;
-            const escapedValue = value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
-            
-            // 1. 处理普通字符串字面量 (在 JSX 文本中)
+            if (!value || !code.includes(value)) return;
+            const escapedValue = escapeRegExp(value);
             const textReg = new RegExp(`(['"` + '`' + `])${escapedValue}\\1`, 'g');
             code = code.replace(textReg, `{t('${row.key}')}`);
-            
-            // 2. 处理 JSX 属性中的字符串 (需要花括号)
             const jsxAttrReg = new RegExp(`(\\w+\\s*=\\s*)(['"` + '`' + `])${escapedValue}\\2`, 'g');
             code = code.replace(jsxAttrReg, `$1{t('${row.key}')}`);
-            
-            // 3. 处理已经在花括号中的字符串
             const jsxExprReg = new RegExp(`(\\{\\s*)(['"` + '`' + `])${escapedValue}\\2(\\s*\\})`, 'g');
             code = code.replace(jsxExprReg, `$1t('${row.key}')$3`);
           });
@@ -162,21 +254,13 @@ export function replaceCommand(opts: any) {
           
           try {
             fs.writeFileSync(absFile, code, 'utf8');
-            console.log(`已处理: ${absFile}`);
           } catch (writeError) {
             console.error(`❌ 写入文件失败: ${absFile}: ${writeError.message}`);
             return;
           }
           
-          // 对修改后的文件执行Prettier格式化
-          if (fixLint) {
-            try {
-              execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
-              console.log(`已对 ${absFile} 执行Prettier格式化`);
-            } catch (error) {
-              console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
-            }
-          }
+          // 统一放入批量 Prettier 处理
+          if (fixLint) prettierTargets.push(absFile);
           return;
         }
       }
@@ -190,107 +274,24 @@ export function replaceCommand(opts: any) {
     
     let replaced = false;
     let hasTImport = false;
-    
-    // 检查是否已存在t的导入
+
     traverse(ast, {
       ImportDeclaration(path) {
-        const source = path.node.source.value;
-        const specifiers = path.node.specifiers;
-        for (const specifier of specifiers) {
-          if (specifier.type === 'ImportSpecifier' && 
-              ((specifier.imported.type === 'Identifier' && specifier.imported.name === 't') ||
-               (specifier.imported.type === 'StringLiteral' && specifier.imported.value === 't'))) {
-            hasTImport = true;
-            break;
+        for (const specifier of path.node.specifiers) {
+          if (specifier.type === 'ImportSpecifier' &&
+            ((specifier.imported.type === 'Identifier' && specifier.imported.name === 't') ||
+             (specifier.imported.type === 'StringLiteral' && specifier.imported.value === 't'))) {
+            hasTImport = true; break;
           }
         }
-      }
-    });
-    
-    traverse(ast, {
+      },
       StringLiteral(path) {
         const v = path.node.value;
-        if (valueKeyMap[v]) {
-          // 检查是否在 TypeScript 类型注解中
-          let parent = path.parent;
-          let isInTypeAnnotation = false;
-          
-          // 检查父节点类型，避免替换 TypeScript 类型相关的字符串
-          while (parent) {
-            if (parent.type && (
-              parent.type === 'TSLiteralType' || // 字面量类型
-              parent.type === 'TSUnionType' || // 联合类型
-              parent.type === 'TSIntersectionType' || // 交叉类型
-              parent.type === 'TSTypeAnnotation' || // 类型注解
-              parent.type === 'TSTypeReference' || // 类型引用
-              parent.type === 'TSTypeLiteral' || // 类型字面量
-              parent.type === 'TSPropertySignature' || // 属性签名
-              parent.type === 'TSMethodSignature' || // 方法签名
-              parent.type === 'TSInterfaceDeclaration' || // 接口声明
-              parent.type === 'TSTypeAliasDeclaration' || // 类型别名声明
-              (parent.type === 'TSPropertySignature' && parent.typeAnnotation) // 属性类型注解
-            )) {
-              isInTypeAnnotation = true;
-              break;
-            }
-            // 特殊检查：如果在函数或方法的返回类型注解中
-            if (parent.type === 'Function' || parent.type === 'ArrowFunctionExpression' || 
-                parent.type === 'FunctionDeclaration' || parent.type === 'FunctionExpression' ||
-                parent.type === 'ObjectMethod') {
-              // 检查是否在 returnType 中
-              let current = path.node;
-              let currentParent = path.parent;
-              while (currentParent && currentParent !== parent) {
-                if (currentParent.type === 'TSTypeAnnotation' && 
-                    parent.returnType && parent.returnType === currentParent) {
-                  isInTypeAnnotation = true;
-                  break;
-                }
-                current = currentParent;
-                currentParent = currentParent.parent;
-              }
-              if (isInTypeAnnotation) break;
-            }
-            parent = parent.parent;
-          }
-          
-          if (isInTypeAnnotation) {
-            console.warn(`⚠️ 跳过TypeScript类型注解中的字符串: "${v}"`);
-            return;
-          }
-          
-          const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]);
-          
-          // 检查是否在 StyleSheet.create 中，如果是则跳过
-          parent = path.parent;
-          let isInStyleSheet = false;
-          while (parent) {
-            if (parent.type === 'CallExpression' && 
-                parent.callee.type === 'MemberExpression' &&
-                parent.callee.object.type === 'Identifier' && 
-                parent.callee.object.name === 'StyleSheet' &&
-                parent.callee.property.type === 'Identifier' && 
-                parent.callee.property.name === 'create') {
-              isInStyleSheet = true;
-              break;
-            }
-            parent = parent.parent;
-          }
-          
-          if (isInStyleSheet) {
-            console.warn(`⚠️ 跳过StyleSheet中的字符串: "${v}"`);
-            return;
-          }
-          
-          // 检查父节点是否为 JSXAttribute
-          if (path.parentPath.isJSXAttribute()) {
-            // 在 JSX 属性中需要用 JSXExpressionContainer 包装
-            path.replaceWith(t.jsxExpressionContainer(callExpression));
-          } else {
-            path.replaceWith(callExpression);
-          }
-          replaced = true;
-        }
+        if (!valueKeyMap[v]) return;
+        if (shouldSkipLiteral(path)) { console.warn(`⚠️ 跳过TypeScript/StyleSheet中的字符串: "${v}"`); return; }
+        const callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[v])]);
+        path.replaceWith(path.parentPath.isJSXAttribute() ? t.jsxExpressionContainer(callExpression) : callExpression);
+        replaced = true;
       },
       JSXText(path) {
           try {
@@ -301,7 +302,6 @@ export function replaceCommand(opts: any) {
               const jsxExpressionContainer = t.jsxExpressionContainer(callExpression);
               path.replaceWith(jsxExpressionContainer);
               replaced = true;
-              console.log(`🔄 替换JSX文本: "${value}" -> t('${valueKeyMap[value]}')`);
             }
           } catch (jsxTextError) {
             console.error(`❌ 处理JSX文本时出错: ${jsxTextError.message}`);
@@ -309,123 +309,32 @@ export function replaceCommand(opts: any) {
           }
         },
       TemplateLiteral(path) {
-        // 检查是否在 TypeScript 类型注解中
-        let parent = path.parent;
-        let isInTypeAnnotation = false;
-        
-        // 检查父节点类型，避免替换 TypeScript 类型相关的模板字符串
-        while (parent) {
-          if (parent.type && (
-            parent.type === 'TSLiteralType' || // 字面量类型
-            parent.type === 'TSUnionType' || // 联合类型
-            parent.type === 'TSIntersectionType' || // 交叉类型
-            parent.type === 'TSTypeAnnotation' || // 类型注解
-            parent.type === 'TSTypeReference' || // 类型引用
-            parent.type === 'TSTypeLiteral' || // 类型字面量
-            parent.type === 'TSPropertySignature' || // 属性签名
-            parent.type === 'TSMethodSignature' || // 方法签名
-            parent.type === 'TSInterfaceDeclaration' || // 接口声明
-            parent.type === 'TSTypeAliasDeclaration' || // 类型别名声明
-            (parent.type === 'TSPropertySignature' && parent.typeAnnotation) // 属性类型注解
-          )) {
-            isInTypeAnnotation = true;
-            break;
-          }
-          // 特殊检查：如果在函数或方法的返回类型注解中
-          if (parent.type === 'Function' || parent.type === 'ArrowFunctionExpression' || 
-              parent.type === 'FunctionDeclaration' || parent.type === 'FunctionExpression' ||
-              parent.type === 'ObjectMethod') {
-            // 检查是否在 returnType 中
-            let current = path.node;
-            let currentParent = path.parent;
-            while (currentParent && currentParent !== parent) {
-              if (currentParent.type === 'TSTypeAnnotation' && 
-                  parent.returnType && parent.returnType === currentParent) {
-                isInTypeAnnotation = true;
-                break;
-              }
-              current = currentParent;
-              currentParent = currentParent.parent;
-            }
-            if (isInTypeAnnotation) break;
-          }
-          parent = parent.parent;
-        }
-        
-        if (isInTypeAnnotation) {
-          console.warn(`⚠️ 跳过TypeScript类型注解中的模板字符串`);
-          return;
-        }
-        
-        // 构建完整的模板字符串值，与 scanner.ts 中的处理保持一致
-        let fullValue = '';
-        const expressions = [];
-        // 用于跟踪每种表达式类型的计数
-        const exprTypeCount: Record<string, number> = {};
-        
-        for (let i = 0; i < path.node.quasis.length; i++) {
-          const quasi = path.node.quasis[i];
-          fullValue += quasi.value.raw;
-          
-          // 添加表达式部分（如果有的话）
-          if (i < path.node.expressions.length) {
-            const expr = path.node.expressions[i];
-            expressions.push(expr);
-            // 跟踪每种表达式类型的使用次数
-            if (!exprTypeCount[expr.type]) {
-              exprTypeCount[expr.type] = 0;
-            }
-            exprTypeCount[expr.type]++;
-            
-            // 使用类型和计数作为占位符，与 scanner.ts 保持一致
-            fullValue += `{{${expr.type}${exprTypeCount[expr.type]}}}`;
-          }
-        }
-        
-        // 检查整个模板字符串是否匹配
+        if (shouldSkipLiteral(path)) { console.warn('⚠️ 跳过TypeScript/StyleSheet中的模板字符串'); return; }
+        const { fullValue, expressions, typeIndexMap } = buildTemplateFullValue(path.node);
         if (valueKeyMap[fullValue]) {
-          // 如果有表达式，则需要传递参数
           let callExpression;
           if (expressions.length > 0) {
-            // 构建参数对象 { Identifier1: value1, Identifier2: value2, ... }
-            // 与 scanner.ts 中的占位符保持一致
-            const properties = expressions.map((expr, index) => {
-              // 使用表达式的类型和计数作为 key，与 scanner.ts 保持一致
-              const keyName = `${expr.type}${index + 1}`;
-              const key = t.identifier(keyName);
+            const properties = expressions.map((expr, idx) => {
+              const key = t.identifier(typeIndexMap[idx]);
               return t.objectProperty(key, expr);
             });
-            const objectExpression = t.objectExpression(properties);
             callExpression = t.callExpression(t.identifier('t'), [
               t.stringLiteral(valueKeyMap[fullValue]),
-              objectExpression
+              t.objectExpression(properties)
             ]);
           } else {
-            // 没有表达式，直接替换
             callExpression = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[fullValue])]);
           }
-          
-          // 检查父节点是否为 JSXAttribute
-          if (path.parentPath.isJSXAttribute()) {
-            // 在 JSX 属性中需要用 JSXExpressionContainer 包装
-            path.replaceWith(t.jsxExpressionContainer(callExpression));
-          } else {
-            path.replaceWith(callExpression);
-          }
-          replaced = true;
-          return;
+          path.replaceWith(path.parentPath.isJSXAttribute() ? t.jsxExpressionContainer(callExpression) : callExpression);
+          replaced = true; return;
         }
-        
-        // 原有的逐个替换逻辑保持不变，以兼容旧的数据
+        // 回退：按 quasi 逐段匹配（兼容旧数据）
         let changed = false;
-        path.node.quasis.forEach((q, idx) => {
+        path.node.quasis.forEach((q: any, idx: number) => {
           const raw = q.value.raw;
           if (valueKeyMap[raw]) {
             const expr = t.callExpression(t.identifier('t'), [t.stringLiteral(valueKeyMap[raw])]);
-            // 检查父节点是否为 JSXAttribute
-            const exprContainer = path.parentPath.isJSXAttribute() ? 
-              t.jsxExpressionContainer(expr) : expr;
-              
+            const exprContainer = path.parentPath.isJSXAttribute() ? t.jsxExpressionContainer(expr) : expr;
             if (idx < path.node.expressions.length) {
               path.node.expressions.splice(idx, 0, exprContainer);
             } else {
@@ -436,10 +345,8 @@ export function replaceCommand(opts: any) {
             changed = true;
           }
         });
-        if (changed) {
-          replaced = true;
-        }
-      },
+        if (changed) replaced = true;
+      }
     });
     
     if (replaced) {
@@ -455,21 +362,13 @@ export function replaceCommand(opts: any) {
       try {
         const output = generate(ast, {}, code).code;
         fs.writeFileSync(absFile, output, 'utf8');
-        console.log(`已处理: ${absFile}`);
       } catch (generateError) {
         console.error(`❌ 代码生成或文件写入失败: ${absFile}: ${generateError.message}`);
         return;
       }
       
       // 对修改后的文件执行Prettier格式化
-      if (fixLint) {
-        try {
-          execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
-          console.log(`已对 ${absFile} 执行Prettier格式化`);
-        } catch (error) {
-          console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
-        }
-      }
+      if (fixLint) prettierTargets.push(absFile);
     } else {
       // 即使没有AST替换，也要确保添加import语句
       if (!code.includes(`import { t } from '${importPath}'`) && !hasTImport) {
@@ -478,28 +377,43 @@ export function replaceCommand(opts: any) {
       
       fileMap[file].forEach((row) => {
         const value = row.zh;
-        const reg = new RegExp(`(['"` + '`' + `])${value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\1`, 'g');
+        if (!value || !code.includes(value)) return;
+        const reg = new RegExp(`(['"` + '`' + `])${escapeRegExp(value)}\\1`, 'g');
         code = code.replace(reg, `t('${row.key}')`);
       });
       
       try {
         fs.writeFileSync(absFile, code, 'utf8');
-        console.log(`已处理: ${absFile}`);
       } catch (writeError) {
         console.error(`❌ 文件写入失败: ${absFile}: ${writeError.message}`);
         return;
       }
       
       // 对修改后的文件执行Prettier格式化
-      if (fixLint) {
-        try {
-          execSync(`npx prettier "${absFile}" --write`, { stdio: 'inherit' });
-          console.log(`已对 ${absFile} 执行Prettier格式化`);
-        } catch (error) {
-          console.warn(`Prettier格式化失败 ${absFile}: ${error.message}`);
-        }
-      }
+      if (fixLint) prettierTargets.push(absFile);
     }
   });
+  if (files.length && fixLint) {
+    try {
+      // 去重
+      const unique = Array.from(new Set(prettierTargets));
+      if (unique.length) {
+        console.log(`运行 Prettier 格式化 ${unique.length} 个文件...`);
+        // 构建命令
+        const args: string[] = [];
+        if (effectivePrettierConfig) {
+          args.push('--config', `"${path.resolve(projectRoot, effectivePrettierConfig)}"`);
+        }
+        if (prettierExtraArgs && Array.isArray(prettierExtraArgs) && prettierExtraArgs.length) {
+          prettierExtraArgs.forEach((a: string) => args.push(a));
+        }
+        const fileArgs = unique.map(f => `"${f}"`).join(' ');
+        const cmd = `npx prettier ${args.join(' ')} ${fileArgs} --write`;
+        execSync(cmd, { stdio: 'inherit' });
+      }
+    } catch (e) {
+      console.warn('批量 Prettier 失败: ' + (e as any).message);
+    }
+  }
   console.log('代码回写完成');
 }

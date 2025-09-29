@@ -35,6 +35,7 @@ program
   .requiredOption('-i, --importPath <importPath>', 'importPath')
   .option('-f, --file <file>', '仅处理指定文件')
   .option('-l, --fixLint <fixLint>', '是否修复lint')
+  .option('-p, --prettier-config <prettierConfig>', '指定 .prettierrc.js 配置文件路径（可选）')
   .action(replaceCommand);
 
 program
