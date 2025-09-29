@@ -102,12 +102,10 @@ export function replaceCommand(opts: any) {
     prettierConfig, // CLI 传入别名
     // 预留：额外 CLI 参数（数组）
     prettierExtraArgs = [] as string[],
-    methodBlankLine,
-    eslintBlankLines ,
+    // （已移除空行自动插入功能，保持逻辑最简）
   } = opts;
   const effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
-  const enableMethodBlankLine = typeof methodBlankLine !== 'undefined' && ['true','1','yes','y'].includes(String(methodBlankLine).toLowerCase());
-  const enableEslintBlankLines = typeof eslintBlankLines !== 'undefined' && ['true','1','yes','y'].includes(String(eslintBlankLines).toLowerCase());
+  // 空行处理已移除
   const projectRoot = process.cwd();
   const excelPath = path.isAbsolute(excel) ? excel : path.resolve(projectRoot, excel);
   
@@ -144,119 +142,7 @@ export function replaceCommand(opts: any) {
 
   const prettierTargets: string[] = [];
 
-  // 轻量级：类方法之间插入空行（避免运行 ESLint --fix 的性能开销）
-  function formatClassMethodBlankLines(code: string): string {
-    if (!enableMethodBlankLine || enableEslintBlankLines) return code; // ESLint 模式更全面
-    const lines = code.split(/\r?\n/);
-    let braceDepth = 0;
-    let pendingClass = false; // 发现 class 关键字但尚未进入其体
-    let inClass = false;
-    let classBodyDepth = 0; // 进入类体后的基准深度（类体左大括号的深度）
-    const methodRegex = /^\s*(?:async\s+)?(?:static\s+)?(?:get\s+|set\s+)?(?:\[.*?\]|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // 粗略扫描 class 声明
-      if (!inClass) {
-        if (/^\s*class\b/.test(line)) {
-          // 可能同一行就出现了 { ，否则下一行找
-          pendingClass = true;
-        }
-      }
-      // 扫描字符以更新 braceDepth，并判断是否进入/退出类体
-      // 为保持性能，这里简单遍历当前行字符
-      for (let c of line) {
-        if (c === '{') {
-          braceDepth++;
-          if (pendingClass && !inClass) {
-            inClass = true;
-            pendingClass = false;
-            classBodyDepth = braceDepth; // 类体内部起始深度
-          }
-        } else if (c === '}') {
-          // 先判断退出
-          if (inClass && braceDepth === classBodyDepth) {
-            inClass = false; // 离开类体
-          }
-          braceDepth--;
-        }
-      }
-      if (!inClass) continue;
-      // 在类体内判断是否为方法定义行
-      if (methodRegex.test(line)) {
-        // 找上一条非空行索引
-        let prevIdx = i - 1;
-        while (prevIdx >= 0 && lines[prevIdx].trim() === '') prevIdx--;
-        // 如果紧挨着且上一行不是类起始的 '{' 那么插入空行
-        if (prevIdx >= 0) {
-          const prevLine = lines[prevIdx];
-            if (!/\{\s*$/.test(prevLine)) {
-              // 确保方法前一行不是已经空行
-              if (i > 0 && lines[i-1].trim() !== '') {
-                lines.splice(i, 0, '');
-                i++; // 跳过刚插入的空行
-              }
-            }
-        }
-      }
-    }
-    return lines.join('\n');
-  }
-  // ESLint 风格：类成员之间、顶层函数之间、块后接函数前插入空行
-  function applyEslintLikeBlankLines(code: string): string {
-    if (!enableEslintBlankLines) return code;
-    const lines = code.split(/\r?\n/);
-    const methodRegex = /^\s*(?:async\s+)?(?:static\s+)?(?:get\s+|set\s+)?(?:\[.*?\]|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/;
-    const classPropRegex = /^\s*(?:public\s+|private\s+|protected\s+)?(?:readonly\s+)?(?:static\s+)?[A-Za-z_$][\w$]*\s*(=|:)/;
-    const topLevelFnRegex = /^\s*(?:export\s+)?function\s+[A-Za-z_$][\w$]*\s*\(/;
-    const topLevelConstArrowFnRegex = /^\s*(?:export\s+)?const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{/;
-    const topLevelConstFnExprRegex = /^\s*(?:export\s+)?const\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?function\b/;
-    let braceDepth = 0;
-    let pendingClass = false;
-    let inClass = false;
-    let classBodyDepth = 0;
-    const isClassMember: boolean[] = new Array(lines.length).fill(false);
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (!inClass && /^\s*class\b/.test(line)) pendingClass = true;
-      for (const ch of line) {
-        if (ch === '{') {
-          braceDepth++;
-          if (pendingClass) { inClass = true; pendingClass = false; classBodyDepth = braceDepth; }
-        } else if (ch === '}') {
-          if (inClass && braceDepth === classBodyDepth) inClass = false;
-          braceDepth--;
-        }
-      }
-      if (inClass && (methodRegex.test(line) || classPropRegex.test(line))) {
-        isClassMember[i] = true;
-      }
-    }
-    for (let i = 0; i < lines.length; i++) {
-      if (!isClassMember[i]) continue;
-      let prev = i - 1;
-      while (prev >= 0 && lines[prev].trim() === '') prev--;
-      if (prev >= 0 && isClassMember[prev]) {
-        if (i > 0 && lines[i-1].trim() !== '') { lines.splice(i,0,''); i++; }
-      }
-    }
-    // 顶层函数
-    braceDepth = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      for (const ch of line) { if (ch === '{') braceDepth++; else if (ch === '}') braceDepth--; }
-      if (braceDepth === 0 && (topLevelFnRegex.test(line) || topLevelConstArrowFnRegex.test(line) || topLevelConstFnExprRegex.test(line))) {
-        let prev = i - 1;
-        while (prev >= 0 && lines[prev].trim() === '') prev--;
-        if (prev >= 0) {
-          const prevLine = lines[prev];
-            if (topLevelFnRegex.test(prevLine) || topLevelConstArrowFnRegex.test(prevLine) || topLevelConstFnExprRegex.test(prevLine) || /}\s*$/.test(prevLine)) {
-              if (i > 0 && lines[i-1].trim() !== '') { lines.splice(i,0,''); i++; }
-            }
-        }
-      }
-    }
-    return lines.join('\n');
-  }
+  // 已移除空行自动调整函数（保持原文件格式）
 
   files.forEach((file) => {
     if (!fileMap[file]) {
@@ -479,8 +365,7 @@ export function replaceCommand(opts: any) {
       
       try {
         let output = generate(ast, {}, code).code;
-        output = formatClassMethodBlankLines(output);
-        output = applyEslintLikeBlankLines(output);
+  // 保留生成输出，不做额外空行格式化
         fs.writeFileSync(absFile, output, 'utf8');
       } catch (generateError) {
         console.error(`❌ 代码生成或文件写入失败: ${absFile}: ${generateError.message}`);
@@ -504,8 +389,7 @@ export function replaceCommand(opts: any) {
       
       try {
         // 直接修改字符串替换路径也应用空行格式
-        code = formatClassMethodBlankLines(code);
-        code = applyEslintLikeBlankLines(code);
+  // 不做额外空行格式化
         fs.writeFileSync(absFile, code, 'utf8');
       } catch (writeError) {
         console.error(`❌ 文件写入失败: ${absFile}: ${writeError.message}`);
