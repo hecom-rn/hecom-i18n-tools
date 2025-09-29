@@ -102,8 +102,8 @@ export function replaceCommand(opts: any) {
     prettierConfig, // CLI 传入别名
     // 预留：额外 CLI 参数（数组）
     prettierExtraArgs = [] as string[],
-    methodBlankLine = true,
-    eslintBlankLines = true,
+    methodBlankLine,
+    eslintBlankLines ,
   } = opts;
   const effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
   const enableMethodBlankLine = typeof methodBlankLine !== 'undefined' && ['true','1','yes','y'].includes(String(methodBlankLine).toLowerCase());
