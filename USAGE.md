@@ -329,7 +329,7 @@ hecom-i18n-tools gen [options]
   --excel <file>         Excel 翻译文件路径
   --out <dir>            输出语言包目录（生成 zh-CN.json / en-US.json 等）
   --master <file>        主 Excel 文件路径（可选）。若提供：
-                         - 完成语言包生成后，将当前 Excel 合并入主表（按工作表、按 key 更新/去重）
+                         - 完成语言包生成后，将当前 Excel 合并入主表（按工作表直接追加，不去重）
                          - 主表不存在将创建（直接移动当前 Excel 为主表）
                          - 合并后删除当前 Excel（若与主表路径不同）
   -h, --help             显示帮助信息

@@ -23,6 +23,32 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
   const srcWb = xlsx.readFile(resolvedSrc);
   const masterWb = xlsx.readFile(resolvedMaster);
 
+  const getFileName = (r: any) => {
+    const f = r && r.file != null ? String(r.file) : '';
+    return f ? path.basename(f) : '';
+  };
+  const getLine = (r: any) => {
+    const v = r && r.line != null ? Number(r.line) : NaN;
+    return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+  };
+  const rowComparator = (a: any, b: any) => {
+    const fa = getFileName(a);
+    const fb = getFileName(b);
+    if (fa && fb) {
+      const cmp = fa.localeCompare(fb);
+      if (cmp !== 0) return cmp;
+    } else if (fa && !fb) {
+      return -1; // 有文件名的排前
+    } else if (!fa && fb) {
+      return 1; // 无文件名的排后
+    }
+    // 文件名相同或都缺失，按行号
+    const la = getLine(a);
+    const lb = getLine(b);
+    if (la !== lb) return la - lb;
+    return 0;
+  };
+
   srcWb.SheetNames.forEach((sheetName) => {
     const srcWs = srcWb.Sheets[sheetName];
     const srcRows: any[] = xlsx.utils.sheet_to_json(srcWs, { defval: '' });
@@ -30,47 +56,22 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
     const masterWs = masterWb.Sheets[sheetName];
     if (!masterWs) {
       // 主表无此工作表，直接新增
-      masterWb.Sheets[sheetName] = xlsx.utils.json_to_sheet(srcRows);
+      const sortedSrc = [...srcRows].sort(rowComparator);
+      masterWb.Sheets[sheetName] = xlsx.utils.json_to_sheet(sortedSrc);
       if (!masterWb.SheetNames.includes(sheetName)) masterWb.SheetNames.push(sheetName);
       return;
     }
 
     const masterRows: any[] = xlsx.utils.sheet_to_json(masterWs, { defval: '' });
-
-    const hasKey = srcRows.some((r) => 'key' in r) || masterRows.some((r) => 'key' in r);
-    if (!hasKey) {
-      const combined = masterRows.concat(srcRows);
-      masterWb.Sheets[sheetName] = xlsx.utils.json_to_sheet(combined);
-      return;
-    }
-
-    const map = new Map<string, any>();
-    masterRows.forEach((r) => {
-      const k = r && r.key != null ? String(r.key) : undefined;
-      if (k) map.set(k, r);
-    });
-    srcRows.forEach((r) => {
-      const k = r && r.key != null ? String(r.key) : undefined;
-      if (!k) return;
-      if (map.has(k)) {
-        const existing = map.get(k) || {};
-        const merged: any = { ...existing };
-        Object.keys(r).forEach((col) => {
-          const val = (r as any)[col];
-          if (val !== undefined && val !== null && val !== '') {
-            merged[col] = val;
-          }
-        });
-        map.set(k, merged);
-      } else {
-        map.set(k, r);
-      }
-    });
-
-    const rows = Array.from(map.values());
+    // 不去重：直接按顺序追加 srcRows 到 masterRows，并按 file 名 + line 排序
+    const rows = masterRows.concat(srcRows).sort(rowComparator);
+    // 保留并扩展表头：使用两侧的列并将 key 放到最前（若存在）
     const headerSet = new Set<string>();
-    rows.forEach((r) => Object.keys(r).forEach((col) => headerSet.add(col)));
-    const headers = ['key', ...Array.from(headerSet).filter((h) => h !== 'key')];
+    [...masterRows, ...srcRows].forEach((r) => Object.keys(r).forEach((col) => headerSet.add(col)));
+    const headersAll = Array.from(headerSet);
+    const headers = headersAll.includes('key')
+      ? ['key', ...headersAll.filter((h) => h !== 'key')]
+      : headersAll;
     masterWb.Sheets[sheetName] = xlsx.utils.json_to_sheet(rows, { header: headers });
   });
 
