@@ -24,7 +24,7 @@ npx hecom-i18n-tools scan -s 'src' -o 'i18n-result.xlsx'
 npx hecom-i18n-tools replace --excel=i18n-result.xlsx --importPath='@/utils/i18n'
 
 # 生成语言包文件
-npx hecom-i18n-tools gen
+npx hecom-i18n-tools gen --excel=i18n/scan-result.xlsx --out=src/locales --master=i18n/master.xlsx
 ```
 
 ## 📋 完整工作流程
@@ -319,6 +319,20 @@ hecom-i18n-tools replace [options]
   --importPath <path>      i18n 工具函数的导入路径
   --fixLint               自动修复 ESLint 问题
   -h, --help              显示帮助信息
+```
+
+#### gen 命令
+```bash
+hecom-i18n-tools gen [options]
+
+选项:
+  --excel <file>         Excel 翻译文件路径
+  --out <dir>            输出语言包目录（生成 zh-CN.json / en-US.json 等）
+  --master <file>        主 Excel 文件路径（可选）。若提供：
+                         - 完成语言包生成后，将当前 Excel 合并入主表（按工作表、按 key 更新/去重）
+                         - 主表不存在将创建（直接移动当前 Excel 为主表）
+                         - 合并后删除当前 Excel（若与主表路径不同）
+  -h, --help             显示帮助信息
 ```
 
   #### static-consts 命令

@@ -43,6 +43,7 @@ program
   .description('通过Excel生成语言包')
   .requiredOption('-e, --excel <excel>', 'Excel文件路径')
   .requiredOption('-o, --out <out>', '输出目录')
+  .option('-m, --master <master>', '主Excel文件路径（可选，合并后删除当前Excel）')
   .action(genCommand);
 
 program
