@@ -578,15 +578,15 @@ export function replaceCommand(opts: any) {
         const cmd = `npx prettier ${args.join(' ')} ${fileArgs}`;
         console.log(`执行命令: npx prettier ${args.join(' ')}`);
         execSync(cmd, { stdio: 'inherit' });
-        // 仅恢复“原本就有空行”的成员对，避免新增无关空行
-        try {
-          unique.forEach(f => {
-            const origPairs = originalClassGapMap.get(f) || new Set<string>();
-            restoreOriginalClassMemberBlankLines(f, origPairs);
-          });
-        } catch (spErr) {
-          console.warn('轻量换行恢复失败（已忽略）：' + (spErr as any).message);
-        }
+        // // 仅恢复“原本就有空行”的成员对，避免新增无关空行
+        // try {
+        //   unique.forEach(f => {
+        //     const origPairs = originalClassGapMap.get(f) || new Set<string>();
+        //     restoreOriginalClassMemberBlankLines(f, origPairs);
+        //   });
+        // } catch (spErr) {
+        //   console.warn('轻量换行恢复失败（已忽略）：' + (spErr as any).message);
+        // }
       }
     } catch (e) {
       console.warn('批量 Prettier 失败: ' + (e as any).message);

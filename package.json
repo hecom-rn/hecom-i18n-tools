@@ -1,6 +1,6 @@
 {
   "name": "hecom-i18n-tools",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "description": "RN/JS/TS 多项目国际化扫描与Excel导出/导入工具",
   "main": "dist/cli.js",
   "bin": {
