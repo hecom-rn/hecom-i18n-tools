@@ -165,6 +165,125 @@ export function replaceCommand(opts: any) {
 
   // 已移除空行自动调整函数（保持原文件格式）
 
+  // 记录：每个文件中“类成员之间原本就有空行(>=2个换行)”的成员对
+  const originalClassGapMap: Map<string, Set<string>> = new Map();
+
+  // 辅助：稳定描述类成员（方法/属性），用于生成成员对键值
+  function memberDescriptor(m: any): string {
+    const isStatic = !!m.static;
+    const kind = (m as any).kind || (m.type === 'ClassProperty' ? 'property' : 'member');
+    let name = 'unknown';
+    const key: any = (m as any).key;
+    if (key) {
+      if (key.name) name = key.name;
+      else if (key.value != null) name = String(key.value);
+      else if (key.id?.name) name = key.id.name;
+    }
+    if (m.type === 'ClassMethod' && (m as any).kind === 'constructor') name = 'constructor';
+    return `${isStatic ? 'static' : 'instance'}:${kind}:${name}`;
+  }
+
+  // 收集：原始源码中类成员之间已有空行的位置（以成员对键标识）
+  function collectOriginalClassGaps(filePath: string, src: string): Set<string> {
+    const set = new Set<string>();
+    let astLocal: any;
+    try {
+      const ext = path.extname(filePath).toLowerCase();
+      const plugins: any[] = [
+        'jsx',
+        'decorators-legacy',
+        'classProperties',
+        'classPrivateProperties',
+        'classPrivateMethods',
+        'dynamicImport',
+        'optionalChaining',
+        'nullishCoalescingOperator',
+        'objectRestSpread',
+      ];
+      if (ext === '.ts' || ext === '.tsx') plugins.push('typescript');
+      if (ext === '.js' || ext === '.jsx') plugins.push('flow', 'flowComments');
+      astLocal = babelParser.parse(src, { sourceType: 'unambiguous', plugins, ranges: true });
+    } catch {
+      return set;
+    }
+    let classIndex = 0;
+    traverse(astLocal, {
+      ClassBody(p: any) {
+        const body = (p.node as any).body || [];
+        for (let i = 0; i < body.length - 1; i++) {
+          const prev: any = body[i];
+          const next: any = body[i + 1];
+          if (typeof prev.end !== 'number' || typeof next.start !== 'number') continue;
+          const between = src.slice(prev.end, next.start);
+          const newlineCount = (between.match(/\n/g) || []).length;
+          if (newlineCount >= 2) {
+            const key = `${classIndex}:${memberDescriptor(prev)}->${memberDescriptor(next)}`;
+            set.add(key);
+          }
+        }
+        classIndex++;
+      }
+    });
+    return set;
+  }
+
+  // 恢复：仅对“原本就有空行”的成员对，补回一行空行（若被 Prettier 折叠）
+  function restoreOriginalClassMemberBlankLines(filePath: string, origPairs: Set<string>) {
+    if (!origPairs || !origPairs.size) return;
+    let src = fs.readFileSync(filePath, 'utf8');
+    let astLocal: any;
+    try {
+      const ext = path.extname(filePath).toLowerCase();
+      const plugins: any[] = [
+        'jsx',
+        'decorators-legacy',
+        'classProperties',
+        'classPrivateProperties',
+        'classPrivateMethods',
+        'dynamicImport',
+        'optionalChaining',
+        'nullishCoalescingOperator',
+        'objectRestSpread',
+      ];
+      if (ext === '.ts' || ext === '.tsx') plugins.push('typescript');
+      if (ext === '.js' || ext === '.jsx') plugins.push('flow', 'flowComments');
+      astLocal = babelParser.parse(src, { sourceType: 'unambiguous', plugins, ranges: true });
+    } catch {
+      return;
+    }
+    type Gap = { insertAt: number };
+    const gaps: Gap[] = [];
+    let classIndex = 0;
+    traverse(astLocal, {
+      ClassBody(p: any) {
+        const body = (p.node as any).body || [];
+        for (let i = 0; i < body.length - 1; i++) {
+          const prev: any = body[i];
+          const next: any = body[i + 1];
+          if (typeof prev.end !== 'number' || typeof next.start !== 'number') continue;
+          const pairKey = `${classIndex}:${memberDescriptor(prev)}->${memberDescriptor(next)}`;
+          if (!origPairs.has(pairKey)) continue; // 仅恢复原本就有空行的成员对
+          const between = src.slice(prev.end, next.start);
+          const newlineCount = (between.match(/\n/g) || []).length;
+          if (newlineCount < 2) {
+            // 在下一成员的起始行前插入一个换行，形成恰好一空行
+            let insertAt = next.start;
+            for (let j = next.start - 1; j >= 0; j--) {
+              if (src[j] === '\n') { insertAt = j + 1; break; }
+            }
+            gaps.push({ insertAt });
+          }
+        }
+        classIndex++;
+      }
+    });
+    if (!gaps.length) return;
+    gaps.sort((a, b) => b.insertAt - a.insertAt).forEach(g => {
+      src = src.slice(0, g.insertAt) + '\n' + src.slice(g.insertAt);
+    });
+    fs.writeFileSync(filePath, src, 'utf8');
+  }
+
   files.forEach((file) => {
     if (!fileMap[file]) {
       console.warn(`Excel中未找到与 ${file} 匹配的行，跳过`);
@@ -183,6 +302,11 @@ export function replaceCommand(opts: any) {
       console.error(`❌ 读取文件失败: ${absFile}`);
       console.error(`错误详情: ${error.message}`);
       return;
+    }
+
+    // 在任何修改之前，记录该文件中“类成员之间原本就有空行”的成员对
+    if (!originalClassGapMap.has(absFile)) {
+      originalClassGapMap.set(absFile, collectOriginalClassGaps(absFile, code));
     }
     // 预筛：如果源码中不包含任意翻译值，直接跳过复杂 AST 解析
     // 但：含有占位符 {{...}} 的模板字符串不能用简单子串判断，否则会漏（例如 你好，{{Identifier1}}! 与源码 你好，${name}!）
@@ -444,67 +568,16 @@ export function replaceCommand(opts: any) {
         }
         const fileArgs = unique.map(f => `"${f}"`).join(' ');
         const cmd = `npx prettier ${args.join(' ')} ${fileArgs}`;
-        console.log(`执行命令: ${cmd}`);
+        console.log(`执行命令: npx prettier ${args.join(' ')}`);
         execSync(cmd, { stdio: 'inherit' });
-        // 仅处理“换行”的轻量后处理：为类成员之间补一行空行，避免全量 ESLint 带来的性能开销
+        // 仅恢复“原本就有空行”的成员对，避免新增无关空行
         try {
-          function ensureOneBlankLineBetweenClassMembers(filePath: string) {
-            let src = fs.readFileSync(filePath, 'utf8');
-            let astForSpacing: any;
-            try {
-              const ext = path.extname(filePath).toLowerCase();
-              const plugins: any[] = [
-                'jsx',
-                'decorators-legacy',
-                'classProperties',
-                'classPrivateProperties',
-                'classPrivateMethods',
-                'dynamicImport',
-                'optionalChaining',
-                'nullishCoalescingOperator',
-                'objectRestSpread',
-              ];
-              if (ext === '.ts' || ext === '.tsx') plugins.push('typescript');
-              if (ext === '.js' || ext === '.jsx') plugins.push('flow', 'flowComments');
-              astForSpacing = babelParser.parse(src, { sourceType: 'unambiguous', plugins, ranges: true });
-            } catch (pe) {
-              // 无法解析则跳过
-              return;
-            }
-            // 收集需要插入空行的位置（从后往前处理，避免索引偏移）
-            type Gap = { insertAt: number };
-            const gaps: Gap[] = [];
-            traverse(astForSpacing, {
-              ClassBody(p: any) {
-                const body = p.node.body || [];
-                for (let i = 0; i < body.length - 1; i++) {
-                  const prev: any = body[i];
-                  const next: any = body[i + 1];
-                  if (typeof prev.end !== 'number' || typeof next.start !== 'number') continue;
-                  const between = src.slice(prev.end, next.start);
-                  // 统计换行数量（忽略行内空白）
-                  const newlineCount = (between.match(/\n/g) || []).length;
-                  if (newlineCount < 2) {
-                    // 计算下一成员的缩进位置（在其起始行的起始处插入一个额外换行）
-                    let insertAt = next.start;
-                    for (let j = next.start - 1; j >= 0; j--) {
-                      if (src[j] === '\n') { insertAt = j + 1; break; }
-                    }
-                    gaps.push({ insertAt });
-                  }
-                }
-              }
-            });
-            if (!gaps.length) return;
-            // 从后往前插入，避免位置偏移
-            gaps.sort((a, b) => b.insertAt - a.insertAt).forEach(g => {
-              src = src.slice(0, g.insertAt) + '\n' + src.slice(g.insertAt);
-            });
-            fs.writeFileSync(filePath, src, 'utf8');
-          }
-          unique.forEach(f => ensureOneBlankLineBetweenClassMembers(f));
+          unique.forEach(f => {
+            const origPairs = originalClassGapMap.get(f) || new Set<string>();
+            restoreOriginalClassMemberBlankLines(f, origPairs);
+          });
         } catch (spErr) {
-          console.warn('轻量换行后处理失败（已忽略）：' + (spErr as any).message);
+          console.warn('轻量换行恢复失败（已忽略）：' + (spErr as any).message);
         }
       }
     } catch (e) {
