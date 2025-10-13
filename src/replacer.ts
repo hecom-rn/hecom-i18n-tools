@@ -96,7 +96,7 @@ export function replaceCommand(opts: any) {
     excel,
     file: onlyFile,
     importPath = 'core/util/i18n',
-    fixLint = false,
+    fixLint: rawFixLint = false,
     // 新增：可传入 Prettier 配置文件路径（相对或绝对）
     prettierConfigPath,
     prettierConfig, // CLI 传入别名
@@ -104,7 +104,26 @@ export function replaceCommand(opts: any) {
     prettierExtraArgs = [] as string[],
     // （已移除空行自动插入功能，保持逻辑最简）
   } = opts;
-  const effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
+  // 将 fixLint 正常化（兼容 commander 传递字符串/布尔）
+  const fixLint = typeof rawFixLint === 'string' ? ['1','true','yes','y','on'].includes(rawFixLint.toLowerCase()) : !!rawFixLint;
+  let effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
+  // 若未显式传入，自动探测常见 Prettier 配置文件
+  if (!effectivePrettierConfig) {
+    const candidates = [
+      '.prettierrc',
+      '.prettierrc.json',
+      '.prettierrc.js',
+      'prettier.config.js',
+      'prettier.config.cjs',
+      '.prettierrc.cjs',
+      '.prettierrc.yaml',
+      '.prettierrc.yml',
+    ];
+    for (const c of candidates) {
+      const p = path.resolve(process.cwd(), c);
+      if (fs.existsSync(p)) { effectivePrettierConfig = p; break; }
+    }
+  }
   // 空行处理已移除
   const projectRoot = process.cwd();
   const excelPath = path.isAbsolute(excel) ? excel : path.resolve(projectRoot, excel);
@@ -408,18 +427,28 @@ export function replaceCommand(opts: any) {
         console.log(`运行 Prettier 格式化 ${unique.length} 个文件...`);
         // 构建命令
         const args: string[] = [];
+        // 将 --write 放在文件列表之前更稳妥
+        args.push('--write');
         if (effectivePrettierConfig) {
-          args.push('--config', `"${path.resolve(projectRoot, effectivePrettierConfig)}"`);
+          const resolved = path.isAbsolute(effectivePrettierConfig)
+            ? effectivePrettierConfig
+            : path.resolve(projectRoot, effectivePrettierConfig);
+          args.push('--config', `"${resolved}"`);
+          console.log(`使用 Prettier 配置: ${resolved}`);
+        } else {
+          console.log('未显式提供 Prettier 配置，尝试使用项目默认或内置规则');
         }
         if (prettierExtraArgs && Array.isArray(prettierExtraArgs) && prettierExtraArgs.length) {
           prettierExtraArgs.forEach((a: string) => args.push(a));
         }
         const fileArgs = unique.map(f => `"${f}"`).join(' ');
-        const cmd = `npx prettier ${args.join(' ')} ${fileArgs} --write`;
+        const cmd = `npx prettier ${args.join(' ')} ${fileArgs}`;
+        console.log(`执行命令: ${cmd}`);
         execSync(cmd, { stdio: 'inherit' });
       }
     } catch (e) {
       console.warn('批量 Prettier 失败: ' + (e as any).message);
+      console.warn('可尝试手动运行 prettier 或检查 npx / 本地路径、Node 版本与 Prettier 是否安装。');
     }
   }
   console.log('代码回写完成');
