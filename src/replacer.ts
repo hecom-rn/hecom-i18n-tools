@@ -97,6 +97,7 @@ export function replaceCommand(opts: any) {
     file: onlyFile,
     importPath = 'core/util/i18n',
     fixLint: rawFixLint = false,
+  // 由 fixLint 统一控制格式化和 ESLint 补空行逻辑
     // 新增：可传入 Prettier 配置文件路径（相对或绝对）
     prettierConfigPath,
     prettierConfig, // CLI 传入别名
@@ -106,6 +107,7 @@ export function replaceCommand(opts: any) {
   } = opts;
   // 将 fixLint 正常化（兼容 commander 传递字符串/布尔）
   const fixLint = typeof rawFixLint === 'string' ? ['1','true','yes','y','on'].includes(rawFixLint.toLowerCase()) : !!rawFixLint;
+  const retainLines = true; // 内部总是尽量保留源代码的行结构，降低非目标区域改动范围
   let effectivePrettierConfig = prettierConfigPath || prettierConfig; // 优先显式 path
   // 若未显式传入，自动探测常见 Prettier 配置文件
   if (!effectivePrettierConfig) {
@@ -383,7 +385,8 @@ export function replaceCommand(opts: any) {
       }
       
       try {
-        let output = generate(ast, {}, code).code;
+        // 当用户要求保留原始行结构时，启用 retainLines 以尽量减少换行变化
+        let output = generate(ast, retainLines ? { retainLines: true } : {}, code).code;
   // 保留生成输出，不做额外空行格式化
         fs.writeFileSync(absFile, output, 'utf8');
       } catch (generateError) {
@@ -391,8 +394,7 @@ export function replaceCommand(opts: any) {
         return;
       }
       
-      // 对修改后的文件执行Prettier格式化
-      if (fixLint) prettierTargets.push(absFile);
+  if (fixLint) prettierTargets.push(absFile);
     } else {
       // 即使没有AST替换，也要确保添加import语句
       if (!code.includes(`import { t } from '${importPath}'`) && !hasTImport) {
@@ -415,8 +417,7 @@ export function replaceCommand(opts: any) {
         return;
       }
       
-      // 对修改后的文件执行Prettier格式化
-      if (fixLint) prettierTargets.push(absFile);
+  if (fixLint) prettierTargets.push(absFile);
     }
   });
   if (files.length && fixLint) {
@@ -445,6 +446,66 @@ export function replaceCommand(opts: any) {
         const cmd = `npx prettier ${args.join(' ')} ${fileArgs}`;
         console.log(`执行命令: ${cmd}`);
         execSync(cmd, { stdio: 'inherit' });
+        // 仅处理“换行”的轻量后处理：为类成员之间补一行空行，避免全量 ESLint 带来的性能开销
+        try {
+          function ensureOneBlankLineBetweenClassMembers(filePath: string) {
+            let src = fs.readFileSync(filePath, 'utf8');
+            let astForSpacing: any;
+            try {
+              const ext = path.extname(filePath).toLowerCase();
+              const plugins: any[] = [
+                'jsx',
+                'decorators-legacy',
+                'classProperties',
+                'classPrivateProperties',
+                'classPrivateMethods',
+                'dynamicImport',
+                'optionalChaining',
+                'nullishCoalescingOperator',
+                'objectRestSpread',
+              ];
+              if (ext === '.ts' || ext === '.tsx') plugins.push('typescript');
+              if (ext === '.js' || ext === '.jsx') plugins.push('flow', 'flowComments');
+              astForSpacing = babelParser.parse(src, { sourceType: 'unambiguous', plugins, ranges: true });
+            } catch (pe) {
+              // 无法解析则跳过
+              return;
+            }
+            // 收集需要插入空行的位置（从后往前处理，避免索引偏移）
+            type Gap = { insertAt: number };
+            const gaps: Gap[] = [];
+            traverse(astForSpacing, {
+              ClassBody(p: any) {
+                const body = p.node.body || [];
+                for (let i = 0; i < body.length - 1; i++) {
+                  const prev: any = body[i];
+                  const next: any = body[i + 1];
+                  if (typeof prev.end !== 'number' || typeof next.start !== 'number') continue;
+                  const between = src.slice(prev.end, next.start);
+                  // 统计换行数量（忽略行内空白）
+                  const newlineCount = (between.match(/\n/g) || []).length;
+                  if (newlineCount < 2) {
+                    // 计算下一成员的缩进位置（在其起始行的起始处插入一个额外换行）
+                    let insertAt = next.start;
+                    for (let j = next.start - 1; j >= 0; j--) {
+                      if (src[j] === '\n') { insertAt = j + 1; break; }
+                    }
+                    gaps.push({ insertAt });
+                  }
+                }
+              }
+            });
+            if (!gaps.length) return;
+            // 从后往前插入，避免位置偏移
+            gaps.sort((a, b) => b.insertAt - a.insertAt).forEach(g => {
+              src = src.slice(0, g.insertAt) + '\n' + src.slice(g.insertAt);
+            });
+            fs.writeFileSync(filePath, src, 'utf8');
+          }
+          unique.forEach(f => ensureOneBlankLineBetweenClassMembers(f));
+        } catch (spErr) {
+          console.warn('轻量换行后处理失败（已忽略）：' + (spErr as any).message);
+        }
       }
     } catch (e) {
       console.warn('批量 Prettier 失败: ' + (e as any).message);
