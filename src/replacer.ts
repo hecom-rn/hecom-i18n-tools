@@ -263,14 +263,22 @@ export function replaceCommand(opts: any) {
           if (typeof prev.end !== 'number' || typeof next.start !== 'number') continue;
           const pairKey = `${classIndex}:${memberDescriptor(prev)}->${memberDescriptor(next)}`;
           if (!origPairs.has(pairKey)) continue; // 仅恢复原本就有空行的成员对
-          const between = src.slice(prev.end, next.start);
-          const newlineCount = (between.match(/\n/g) || []).length;
-          if (newlineCount < 2) {
-            // 在下一成员的起始行前插入一个换行，形成恰好一空行
-            let insertAt = next.start;
-            for (let j = next.start - 1; j >= 0; j--) {
-              if (src[j] === '\n') { insertAt = j + 1; break; }
-            }
+          // 更稳健地计算“空行数”：
+          // blankLines = 0 表示没有空行（成员紧邻，仅 1 个换行）；
+          // blankLines = 1 表示恰好一空行（2 个换行）；依此类推。
+          const firstNLAfterPrev = src.indexOf('\n', prev.end);
+          const lastNLBeforeNext = src.lastIndexOf('\n', next.start - 1);
+          let blankLines = 0;
+          if (firstNLAfterPrev !== -1 && lastNLBeforeNext !== -1 && lastNLBeforeNext > firstNLAfterPrev) {
+            const middle = src.slice(firstNLAfterPrev + 1, lastNLBeforeNext);
+            blankLines = 1 + ((middle.match(/\n/g) || []).length);
+          } else if (firstNLAfterPrev !== -1 && firstNLAfterPrev < next.start) {
+            // 只有一个换行，说明没有空行
+            blankLines = 0;
+          }
+          if (blankLines < 1) {
+            // 需要补一空行：在下一成员起始行前插入一个换行
+            const insertAt = lastNLBeforeNext >= 0 ? lastNLBeforeNext + 1 : next.start;
             gaps.push({ insertAt });
           }
         }
