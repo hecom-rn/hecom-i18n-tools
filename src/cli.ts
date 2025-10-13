@@ -34,8 +34,7 @@ program
   .requiredOption('-e, --excel <excel>', 'Excel文件路径')
   .requiredOption('-i, --importPath <importPath>', 'importPath')
   .option('-f, --file <file>', '仅处理指定文件')
-  // 将 fixLint 定义为布尔开关：存在即为 true
-  .option('-l, --fixLint', '是否在回写后运行 Prettier 进行格式化')
+  .option('-l, --fixLint <fixLint>', '是否在回写后运行 Prettier 进行格式化')
   .option('-p, --prettier-config <prettierConfig>', '指定 .prettierrc.js 配置文件路径（可选）')
   .action(replaceCommand);
 
