@@ -312,6 +312,79 @@ export function replaceCommand(opts: any) {
       return;
     }
 
+    // 检查文件是否包含 i18n-ignore-file 注释，如果包含则忽略整个文件
+    if (code.includes('i18n-ignore-file')) {
+        console.log(`[i18n-tools] 文件 ${filePath} 被 i18n-ignore-file 注释忽略`);
+        return results;
+    }
+
+    // 预处理，找出所有注释区间，后续跳过注释内字符串
+    const commentRanges: Array<{start:number,end:number}> = [];
+    const commentRegex = /\/\*([\s\S]*?)\*\/|\/\/.*$/gm;
+    let m;
+    while ((m = commentRegex.exec(code))) {
+        commentRanges.push({start: m.index, end: m.index + m[0].length});
+    }
+
+    // 查找 i18n-ignore 注释标记的行
+    const ignoreLines: number[] = [];
+    const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
+    let lineIndex = 0;
+    let lineStart = 0;
+    for (let i = 0; i <= code.length; i++) {
+        if (i === code.length || code[i] === '\n') {
+        const lineContent = code.substring(lineStart, i);
+        if (ignoreRegex.test(lineContent)) {
+            ignoreLines.push(lineIndex + 1); // 行号从1开始
+        }
+        lineIndex++;
+        lineStart = i + 1;
+        }
+    }
+
+    function isInComment(start: number, end: number) {
+        return commentRanges.some(r => start >= r.start && end <= r.end);
+    }
+    
+
+    // 检查 AST 节点的范围内是否有 i18n-ignore 注释
+    function shouldIgnoreNode(nodeStartLine: number, nodeEndLine: number): boolean {
+        // 检查节点范围内的所有行是否有 i18n-ignore 注释
+        for (let line = nodeStartLine; line <= nodeEndLine; line++) {
+        if (ignoreLines.includes(line)) {
+            return true;
+        }
+        }
+        
+        // 还要检查节点开始行的前一行是否有 i18n-ignore 注释
+        // 这是为了处理注释在前、字符串在后的情况
+        if (ignoreLines.includes(nodeStartLine - 1)) {
+        return true;
+        }
+        
+        return false;
+    }
+
+    // 忽略的日志对象（包括内置 console 和自定义 UnionLog）
+    const ignoredLogObjects = new Set<string>(['console', 'UnionLog']);
+    const ignoredLogMethods = new Set<string>(['log','warn','error','info','debug','trace','verbose','fatal']);
+
+    function isInIgnoredLogCall(p: NodePath<any>): boolean {
+      let current: NodePath<any> | null = p.parentPath;
+      while (current) {
+        if (current.isCallExpression()) {
+          const callee: any = current.node.callee;
+            if (callee && callee.type === 'MemberExpression' &&
+                callee.object && callee.object.type === 'Identifier' && ignoredLogObjects.has(callee.object.name) &&
+                callee.property && callee.property.type === 'Identifier' && ignoredLogMethods.has(callee.property.name)) {
+              return true;
+            }
+        }
+        current = current.parentPath;
+      }
+      return false;
+    }
+    
     // 在任何修改之前，记录该文件中“类成员之间原本就有空行”的成员对
     if (!originalClassGapMap.has(absFile)) {
       originalClassGapMap.set(absFile, collectOriginalClassGaps(absFile, code));
@@ -443,6 +516,16 @@ export function replaceCommand(opts: any) {
         }
       },
       StringLiteral(path) {
+        if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
+        // 检查是否在需要忽略的日志调用中（console / UnionLog）
+        if (isInIgnoredLogCall(path)) {
+            return;
+        }
+        
+        // 检查字符串范围内是否有 i18n-ignore 注释
+        const startLine = path.node.loc.start.line;
+        const endLine = path.node.loc.end.line;
+        if (shouldIgnoreNode(startLine, endLine)) return;
         const v = path.node.value;
         if (!valueKeyMap[v]) return;
         if (shouldSkipLiteral(path)) { console.warn(`⚠️ 跳过TypeScript/StyleSheet中的字符串: "${v}"`); return; }
@@ -451,7 +534,13 @@ export function replaceCommand(opts: any) {
         replaced = true;
       },
       JSXText(path) {
-          try {
+            try {
+                        // 检查JSX文本范围内是否有 i18n-ignore 注释
+            const startLine = path.node.loc?.start.line || 0;
+            const endLine = path.node.loc?.end.line || startLine;
+            if (shouldIgnoreNode(startLine, endLine)) return;
+            
+            if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
             const value = path.node.value.trim();
             if (value && valueKeyMap[value]) {
               // 替换JSXText为JSXExpressionContainer包装的t()调用
@@ -467,6 +556,17 @@ export function replaceCommand(opts: any) {
         },
       TemplateLiteral(path) {
         if (shouldSkipLiteral(path)) { console.warn('⚠️ 跳过TypeScript/StyleSheet中的模板字符串'); return; }
+        // 忽略 console / UnionLog 等日志调用中的模板字符串
+        if (isInIgnoredLogCall(path)) {
+            return;
+        }
+        const firstQuasi = path.node.quasis[0];
+        if (firstQuasi.start !== undefined && firstQuasi.end !== undefined && isInComment(firstQuasi.start, firstQuasi.end)) return;
+        let line = path.node.loc.start.line;
+        const endLine = path.node.loc.end.line;
+        
+        // 检查整个模板字符串范围内是否有 i18n-ignore 注释
+        if (shouldIgnoreNode(line, endLine)) return;
         const { fullValue, expressions, typeIndexMap } = buildTemplateFullValue(path.node);
         if (valueKeyMap[fullValue]) {
           let callExpression;
