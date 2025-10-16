@@ -83,6 +83,8 @@ export function genCommand(opts: any) {
   const { excel, out, master } = opts;
   const wb = xlsx.readFile(excel);
   const langMap: Record<string, Record<string, string>> = {};
+  // 记录冲突: { lang: { key: { existing: string, incoming: string } } }
+  const conflicts: Record<string, Record<string, { existing: string; incoming: string }>> = {};
   
   // 遍历所有工作表
   wb.SheetNames.forEach(sheetName => {
@@ -98,23 +100,67 @@ export function genCommand(opts: any) {
     });
   });
   
+  // 第一阶段：预检测冲突（严格模式：一旦发现冲突直接终止，不写任何语言包文件）
+  Object.keys(langMap).forEach((lang) => {
+    const outputPath = path.join(out, `${lang}.json`);
+    if (!fs.existsSync(outputPath)) return; // 无旧文件，不会有冲突
+    try {
+      const existingContent = fs.readFileSync(outputPath, 'utf8');
+      const existingLangMap = JSON.parse(existingContent);
+      Object.keys(langMap[lang]).forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
+          const oldVal = existingLangMap[k];
+          const newVal = langMap[lang][k];
+            if (oldVal !== newVal) {
+              if (!conflicts[lang]) conflicts[lang] = {};
+              if (!conflicts[lang][k]) {
+                conflicts[lang][k] = { existing: oldVal, incoming: newVal };
+              }
+            }
+        }
+      });
+    } catch (e) {
+      console.warn(`读取旧文件以检测冲突失败 ${outputPath}: ${e}`);
+    }
+  });
+
+  const hadConflicts = Object.keys(conflicts).length > 0;
+  if (hadConflicts) {
+    const summary = Object.entries(conflicts).map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`).join(', ');
+    console.error(`发现翻译冲突 (${summary})，已阻止生成。`);
+    try {
+      fs.mkdirSync(out, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+      const reportPath = path.join(out, `conflicts-${stamp}.json`);
+      fs.writeFileSync(reportPath, JSON.stringify(conflicts, null, 2), 'utf8');
+      console.error(`冲突详情已写入: ${reportPath}`);
+    } catch (e) {
+      console.warn(`写入冲突报告失败: ${e}`);
+    }
+    throw new Error('存在同 key 不同翻译的冲突，生成过程已中断。');
+  }
+
+  // 第二阶段：写入文件（只有在没有冲突时才执行）
   fs.mkdirSync(out, { recursive: true });
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
-    // 如果文件已存在，则读取现有内容并合并
+    let finalMap = { ...langMap[lang] };
+    let existingLangMap: Record<string, string> | null = null;
     if (fs.existsSync(outputPath)) {
       try {
-        const existingContent = fs.readFileSync(outputPath, 'utf8');
-        const existingLangMap = JSON.parse(existingContent);
-        // 合并现有内容和新内容，新内容优先
-        langMap[lang] = { ...existingLangMap, ...langMap[lang] };
-      } catch (err) {
-        console.warn(`读取现有文件 ${outputPath} 时出错: ${err}`);
+        existingLangMap = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+      } catch (e) {
+        console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);
       }
     }
-    fs.writeFileSync(outputPath, JSON.stringify(langMap[lang], null, 2), 'utf8');
+    if (existingLangMap) {
+      // 没有冲突（否则已提前退出），直接合并：新值覆盖旧值
+      finalMap = { ...existingLangMap, ...finalMap };
+    }
+    fs.writeFileSync(outputPath, JSON.stringify(finalMap, null, 2), 'utf8');
     console.log(`生成: ${lang}.json`);
   });
+
   console.log('语言包生成完成');
 
   // 生成语言包后，合并到主 xlsx 并删除当前 xlsx
