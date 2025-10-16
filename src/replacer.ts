@@ -521,11 +521,15 @@ export function replaceCommand(opts: any) {
         if (isInIgnoredLogCall(path)) {
             return;
         }
-        
         // 检查字符串范围内是否有 i18n-ignore 注释
-        const startLine = path.node.loc.start.line;
-        const endLine = path.node.loc.end.line;
-        if (shouldIgnoreNode(startLine, endLine)) return;
+        if (path.node.loc && /[\u4e00-\u9fa5]/.test(path.node.value)) {
+            // 检查字符串范围内是否有 i18n-ignore 注释
+            const startLine = path.node.loc.start.line;
+            const endLine = path.node.loc.end.line;
+            if (shouldIgnoreNode(startLine, endLine)) {
+              return;
+            }
+        }
         const v = path.node.value;
         if (!valueKeyMap[v]) return;
         if (shouldSkipLiteral(path)) { console.warn(`⚠️ 跳过TypeScript/StyleSheet中的字符串: "${v}"`); return; }
