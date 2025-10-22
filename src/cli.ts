@@ -3,7 +3,6 @@ import { Command } from 'commander';
 import { scanCommand } from './scanner';
 import { replaceCommand } from './replacer';
 import { genCommand } from './i18nGenerator';
-import { syncCommand } from './syncTranslations';
 import { scanStaticConstsCommand } from './staticConstsScanner';
 
 const program = new Command();
@@ -45,23 +44,6 @@ program
   .requiredOption('-o, --out <out>', '输出目录')
   .option('-m, --master <master>', '主Excel文件路径（可选，合并后删除当前Excel）')
   .action(genCommand);
-
-program
-  .command('sync')
-  .description('同步翻译数据，处理代码重构后的行号对应问题')
-  .requiredOption('-e, --excel <excel>', '主Excel翻译文件路径')
-  .option('-s, --src <src>', '源代码目录', 'src')
-  .option('-o, --output <output>', '输出同步后的Excel文件路径（默认覆盖原文件）')
-  .option('-r, --report <report>', '生成同步报告文件', 'sync-report.md')
-  .action((opts) => {
-    // 处理src参数，支持逗号分隔
-    if (typeof opts.src === 'string' && opts.src.includes(',')) {
-      opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
-    } else if (typeof opts.src === 'string') {
-      opts.src = [opts.src];
-    }
-    syncCommand(opts);
-  });
 
 program
   .command('static-consts')
