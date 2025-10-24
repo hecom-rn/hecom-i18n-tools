@@ -27,7 +27,7 @@
     "start": "node dist/cli.js",
     "scan": "yarn ts-node dist/cli.js scan -s 'test' -o 'x.xlsx'",
     "replace": "yarn ts-node dist/cli.js replace --excel=x.xlsx --importPath='core/util/i18n'",
-    "gen": "yarn ts-node dist/cli.js gen",
+    "gen": "yarn ts-node dist/cli.js gen --excel=version.xlsx --out=i18n/locales --master=mater.xlsx",
     "test": "npm run build && node test/run-tests.js"
   },
   "keywords": [
