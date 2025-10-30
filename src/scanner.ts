@@ -229,10 +229,39 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       return false;
     }
 
+    // 判断节点或其前后关联注释中是否含有 i18n-ignore
+    function hasIgnoreComment(path: NodePath<any>): boolean {
+      const node: any = path.node;
+      // 行号方式：本行、上一行、上一行到本行之间的块注释
+      if (!node.loc) return false;
+      const startLine = node.loc.start.line;
+      const endLine = node.loc.end.line;
+      // 检查节点前一行
+      if (startLine > 1) {
+        const prevLine = codeLines[startLine - 2];
+        if (/\/\/.*i18n-ignore/.test(prevLine)) return true;
+      }
+      // 当前行尾部注释
+      const currentLine = codeLines[startLine - 1];
+      if (/\/\/.*i18n-ignore/.test(currentLine)) return true;
+      // 查找与节点相邻的块注释：在源码中截取节点开始前的最多300字符
+      if (node.start !== undefined) {
+        const lookBehindStart = Math.max(0, node.start - 300);
+        const prefix = code.slice(lookBehindStart, node.start);
+        // 只取最后一个块注释或行注释片段
+        const blockMatch = /\/\*[\s\S]*?i18n-ignore[\s\S]*?\*\/$/.exec(prefix);
+        if (blockMatch) return true;
+        const lineMatch = /\/\/.*i18n-ignore[\s\S]*?$/.exec(prefix);
+        if (lineMatch) return true;
+      }
+      return false;
+    }
+
     traverse(ast as any, {
       StringLiteral(path: NodePath<any>) {
         if (path.node.loc && /[\u4e00-\u9fa5]/.test(path.node.value)) {
           if (path.node.start !== undefined && path.node.end !== undefined && isInComment(path.node.start, path.node.end)) return;
+          if (hasIgnoreComment(path)) return;
           
           // 检查是否为testID相关的字符串，如果是则忽略
           const pos = `${path.node.start}-${path.node.end}`;
@@ -267,6 +296,7 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       },
       TemplateLiteral(path: NodePath<any>) {
         if (path.node.loc) {
+          if (hasIgnoreComment(path)) return;
           // 检查是否为testID相关的模板字符串，如果是则忽略
           if (path.node.start !== undefined && path.node.end !== undefined) {
             const pos = `${path.node.start}-${path.node.end}`;
@@ -330,6 +360,7 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
         const value = path.node.value;
         if (/[\u4e00-\u9fa5]/.test(value)) {
           if (!value.trim()) return;
+          if (hasIgnoreComment(path)) return;
           // 精确推算内容实际所在行号
           let line = path.node.loc?.start.line || 0;
           // 统计 value 前的换行数，推算实际内容行
