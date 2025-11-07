@@ -316,7 +316,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           const exprTypeCount: Record<string, number> = {};
           for (let i = 0; i < path.node.quasis.length; i++) {
             const quasi = path.node.quasis[i];
-            const value = quasi.value.raw;
+            // 使用 cooked 优先，避免 \n 被二次转义成 \\n 导致 Excel 中出现双斜杠；对于非法转义 cooked 可能为 undefined 回退 raw
+            const value = (quasi.value.cooked ?? quasi.value.raw);
             fullValue += value;
             if (/[\u4e00-\u9fa5]/.test(value)) {
               hasChinese = true;
