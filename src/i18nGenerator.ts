@@ -80,7 +80,7 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
 }
 
 export function genCommand(opts: any) {
-  const { excel, out, master } = opts;
+  const { excel, out, master, conflictReport } = opts;
   const wb = xlsx.readFile(excel);
   const langMap: Record<string, Record<string, string>> = {};
   // 记录冲突: { lang: { key: { existing: string, incoming: string } } }
@@ -126,18 +126,70 @@ export function genCommand(opts: any) {
 
   const hadConflicts = Object.keys(conflicts).length > 0;
   if (hadConflicts) {
-    const summary = Object.entries(conflicts).map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`).join(', ');
-    console.error(`发现翻译冲突 (${summary})，已阻止生成。`);
-    try {
-      fs.mkdirSync(out, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
-      const reportPath = path.join(out, `conflicts-${stamp}.json`);
-      fs.writeFileSync(reportPath, JSON.stringify(conflicts, null, 2), 'utf8');
-      console.error(`冲突详情已写入: ${reportPath}`);
-    } catch (e) {
-      console.warn(`写入冲突报告失败: ${e}`);
+    // 若提供 conflictReport，则尝试读取并应用选择
+    let allResolved = false;
+    if (conflictReport && fs.existsSync(conflictReport)) {
+      try {
+        const reportJson = JSON.parse(fs.readFileSync(conflictReport, 'utf8'));
+        // 验证并应用选择
+        allResolved = true;
+        Object.entries(conflicts).forEach(([lang, ks]) => {
+          const langReport = reportJson[lang];
+          if (!langReport) { allResolved = false; return; }
+          Object.entries(ks).forEach(([key, pair]) => {
+            const item = langReport[key];
+            if (!item || typeof item !== 'object') { allResolved = false; return; }
+            const sel = item.selected;
+            if (sel == null) { allResolved = false; return; }
+            if (!langMap[lang]) langMap[lang] = {};
+            if (sel === 'existing') {
+              // 保留旧值
+              langMap[lang][key] = pair.existing;
+            } else if (sel === 'incoming') {
+              // 维持新值（langMap 已设为 incoming）
+              // 确保存在
+              langMap[lang][key] = pair.incoming;
+            } else if (typeof sel === 'string') {
+              // 自定义覆盖值
+              langMap[lang][key] = sel;
+            } else {
+              allResolved = false;
+            }
+          });
+        });
+      } catch (e) {
+        console.warn(`读取冲突报告失败，将生成新的报告: ${e}`);
+      }
     }
-    throw new Error('存在同 key 不同翻译的冲突，生成过程已中断。');
+
+    if (!allResolved) {
+      const summary = Object.entries(conflicts).map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`).join(', ');
+      console.error(`发现翻译冲突 (${summary})。需先在冲突报告中选择处理方式后再重试。`);
+      try {
+        fs.mkdirSync(out, { recursive: true });
+        const reportPath = path.join(out, 'conflicts.json');
+        // 如果已有旧的 conflicts.json，直接覆盖（保留简洁性）；如需历史版本可自行备份。
+        const selectable = Object.fromEntries(
+          Object.entries(conflicts).map(([lang, ks]) => [
+            lang,
+            Object.fromEntries(
+              Object.entries(ks).map(([key, pair]) => [
+                key,
+                { existing: pair.existing, incoming: pair.incoming, selected: 'incoming' }
+              ])
+            )
+          ])
+        );
+        fs.writeFileSync(reportPath, JSON.stringify(selectable, null, 2), 'utf8');
+        console.error(`冲突详情已写入: ${reportPath}`);
+        console.error('编辑该文件，将 selected 设为 "existing" | "incoming" 或自定义字符串，然后使用 --conflict-report 指向该文件再次执行。');
+      } catch (e) {
+        console.warn(`写入冲突报告失败: ${e}`);
+      }
+      throw new Error('存在未解决的翻译冲突，生成过程已中断。');
+    } else {
+      console.log('所有冲突已根据报告选择处理，继续生成语言包。');
+    }
   }
 
   // 第二阶段：写入文件（只有在没有冲突时才执行）

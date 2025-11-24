@@ -335,6 +335,46 @@ hecom-i18n-tools gen [options]
   -h, --help             显示帮助信息
 ```
 
+  ##### 冲突处理与可选合并
+
+  当生成阶段检测到同一语言同一 key 旧语言包与新 Excel 中出现不同翻译，会生成“冲突报告”并中断（不写入任何语言包文件）。报告文件结构示例：
+
+  ```jsonc
+  {
+    "en": {
+      "i18n_xxx123": {
+        "existing": "旧翻译",
+        "incoming": "新翻译",
+        "selected": "incoming" // 可编辑：incoming | existing | 自定义字符串
+      }
+    }
+  }
+  ```
+
+  处理流程：
+  1. 首次出现冲突：工具会在 `--out` 目录写固定文件 `conflicts.json`，默认 `selected` 为 `incoming`。
+  2. 你可以逐个编辑 `selected` 字段：
+     - `incoming`：采用新 Excel 翻译（默认）
+     - `existing`：保留旧语言包翻译
+     - 任意字符串：使用你手动填写的覆盖值
+  3. 重新执行命令并指定该报告：
+
+  ```bash
+  hecom-i18n-tools gen --excel=i18n/scan-result.xlsx --out=src/locales --conflict-report=src/locales/conflicts-2025-11-24T03-00-53.json
+  ```
+
+  全部冲突都有效选择后将继续生成语言包。若报告缺失或仍有未选项，会再次生成新的报告并中断。
+
+  新增参数：
+  | 参数 | 描述 |
+  |------|------|
+  | --conflict-report <file> | 指向已编辑完成的冲突报告文件以自动应用选择并继续生成 |
+
+  注意：
+  * 冲突判定只比较旧文件与新 Excel 对同 key 的字符串不相等情况。
+  * 报告中的语言 / key 必须与当前检测到的冲突集合匹配；缺失或无效将视为未解决。
+  * 编辑后可提交到版本库，便于代码审核时查看翻译决策。
+
   #### static-consts 命令
   扫描全局 `const` 声明中值为：
   - 直接中文字符串 `const today = '今天';`

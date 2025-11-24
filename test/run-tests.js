@@ -60,8 +60,8 @@ async function testConflictAbort() {
     const enJson = JSON.parse(fs.readFileSync(path.join(outDir, 'en.json'), 'utf8'));
     assert.strictEqual(enJson.hello, 'OldHello');
     // 确认有冲突报告
-    const reports = fs.readdirSync(outDir).filter(f => f.startsWith('conflicts-') && f.endsWith('.json'));
-    assert.ok(reports.length === 1, '冲突报告未生成');
+  const conflictFile = path.join(outDir, 'conflicts.json');
+  assert.ok(fs.existsSync(conflictFile), '固定文件名 conflicts.json 未生成');
     // Excel 仍存在
     assert.ok(fs.existsSync(excel), 'Excel 不应被删除');
   }

@@ -43,6 +43,7 @@ program
   .requiredOption('-e, --excel <excel>', 'Excel文件路径')
   .requiredOption('-o, --out <out>', '输出目录')
   .option('-m, --master <master>', '主Excel文件路径（可选，合并后删除当前Excel）')
+  .option('-r, --conflict-report <conflictReport>', '冲突报告文件路径（用于选择 existing/incoming/自定义翻译值）')
   .action(genCommand);
 
 program
