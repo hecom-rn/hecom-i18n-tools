@@ -468,6 +468,8 @@ export async function scanCommand(opts: any) {
         gitlab: link ? { t: 's', l: { Target: link }, v: '链接' } : '',
         zh: value,
         en: configOptions.translate ? await configOptions.translate(value) : undefined,
+        es: undefined,
+        pt: undefined,
         file,
         line,
         key,
