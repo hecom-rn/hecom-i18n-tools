@@ -193,7 +193,15 @@ export function genCommand(opts: any) {
       }
       throw new Error('存在未解决的翻译冲突，生成过程已中断。');
     } else {
-      console.log('所有冲突已根据报告选择处理，继续生成语言包。');
+      console.log('所有冲突已根据报告选择处理，继续生成语言包。');      // 删除已使用的冲突报告文件
+      if (conflictReport && fs.existsSync(conflictReport)) {
+        try {
+          fs.unlinkSync(conflictReport);
+          console.log(`已删除冲突报告: ${conflictReport}`);
+        } catch (e) {
+          console.warn(`删除冲突报告失败: ${e}`);
+        }
+      }    
     }
   }
 
