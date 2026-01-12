@@ -175,7 +175,12 @@ export function genCommand(opts: any) {
             Object.fromEntries(
               Object.entries(ks).map(([key, pair]) => [
                 key,
-                { existing: pair.existing, incoming: pair.incoming, selected: 'incoming' }
+                { 
+                  existing: pair.existing, 
+                  incoming: pair.incoming, 
+                  zh: langMap['zh']?.[key] || '', 
+                  selected: 'incoming' 
+                }
               ])
             )
           ])
