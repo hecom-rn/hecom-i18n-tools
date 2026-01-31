@@ -470,6 +470,7 @@ export async function scanCommand(opts: any) {
         en: configOptions.translate ? await configOptions.translate(value) : undefined,
         es: undefined,
         pt: undefined,
+        th: undefined,
         file,
         line,
         key,
