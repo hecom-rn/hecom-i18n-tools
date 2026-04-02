@@ -79,18 +79,143 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
   console.log(`已将 ${path.basename(resolvedSrc)} 合并到主表 ${resolvedMaster}`);
 }
 
-export function genCommand(opts: any) {
-  const { excel, out, master, conflictReport } = opts;
+// ----------------------------- 邮件发送 ------------------------------------
+
+interface EmailConfig {
+  smtp: {
+    host: string;
+    port: number;
+    secure: boolean;
+    auth: { user: string; pass: string };
+  };
+  from: string;
+  to: string | string[];
+}
+
+type ConflictMap = Record<
+  string,
+  Record<string, { existing: string; incoming: string; zh?: string }>
+>;
+
+async function sendGenEmail(
+  langMap: Record<string, Record<string, string>>,
+  conflicts: ConflictMap,
+  emailConfig: EmailConfig
+): Promise<void> {
+  let nodemailer: any;
+  try {
+    nodemailer = require('nodemailer');
+  } catch {
+    console.warn(
+      '[i18n-gen] 未安装 nodemailer，跳过邮件发送。请运行: npm install nodemailer'
+    );
+    return;
+  }
+
+  const transporter = nodemailer.createTransporter({
+    host: emailConfig.smtp.host,
+    port: emailConfig.smtp.port,
+    secure: emailConfig.smtp.secure,
+    auth: emailConfig.smtp.auth,
+  });
+
+  const recipients = Array.isArray(emailConfig.to)
+    ? emailConfig.to.join(', ')
+    : emailConfig.to;
+
+  const conflictCount = Object.values(conflicts).reduce(
+    (sum, ks) => sum + Object.keys(ks).length,
+    0
+  );
+  const langCount = Object.keys(langMap).length;
+  const keyCount = Object.keys(Object.values(langMap)[0] ?? {}).length;
+  const date = new Date().toLocaleDateString('zh-CN');
+  const hasConflicts = conflictCount > 0;
+
+  const conflictRows = Object.entries(conflicts).flatMap(([lang, keys]) =>
+    Object.entries(keys).map(
+      ([key, pair]) =>
+        `<tr>
+          <td style="padding:4px 8px">${lang}</td>
+          <td style="padding:4px 8px;font-family:monospace">${key}</td>
+          <td style="padding:4px 8px">${pair.zh ?? ''}</td>
+          <td style="padding:4px 8px">${pair.existing}</td>
+          <td style="padding:4px 8px">${pair.incoming}</td>
+        </tr>`
+    )
+  );
+
+  const conflictSection = hasConflicts ? `
+    <h3 style="color:#c0392b">冲突详情（共 ${conflictCount} 条，已自动使用新值覆盖）</h3>
+    <table border="1" cellpadding="0" cellspacing="0"
+           style="border-collapse:collapse;font-size:13px;width:100%">
+      <thead style="background:#f5f5f5">
+        <tr>
+          <th style="padding:6px 8px">语言</th>
+          <th style="padding:6px 8px">Key</th>
+          <th style="padding:6px 8px">中文原文</th>
+          <th style="padding:6px 8px">原有值（被覆盖）</th>
+          <th style="padding:6px 8px">新值</th>
+        </tr>
+      </thead>
+      <tbody>${conflictRows.join('')}</tbody>
+    </table>` : `<p style="color:#27ae60">✅ 本次生成无翻译冲突。</p>`;
+
+  const html = `
+    <h2 style="color:#333">i18n 语言包生成报告</h2>
+    <p>生成时间：${new Date().toLocaleString('zh-CN')}</p>
+    <p>共生成 <strong>${langCount}</strong> 个语言包，<strong>${keyCount}</strong> 个 key</p>
+    ${conflictSection}
+    <p style="color:#888;font-size:12px">由 hecom-i18n-tools 自动发送</p>
+  `;
+
+  const subject = hasConflicts
+    ? `[i18n] 语言包生成报告 ${date}（⚠️ ${conflictCount} 条冲突）`
+    : `[i18n] 语言包生成报告 ${date}（✅ 无冲突）`;
+
+  try {
+    await transporter.sendMail({
+      from: emailConfig.from,
+      to: recipients,
+      subject,
+      html,
+    });
+    console.log(`[i18n-gen] 生成报告邮件已发送至: ${recipients}`);
+  } catch (e) {
+    console.warn(`[i18n-gen] 发送生成报告邮件失败: ${e}`);
+  }
+}
+
+// ----------------------------- 主入口 ------------------------------------
+
+export async function genCommand(opts: any) {
+  const { excel, out, master, conflictReport, config } = opts;
+
+  // 从配置文件加载 email 配置
+  let emailConfig: EmailConfig | undefined;
+  if (config) {
+    try {
+      const configPath = path.isAbsolute(config)
+        ? config
+        : path.join(process.cwd(), config);
+      const rawConfig = require(configPath);
+      const cfg = rawConfig.default || rawConfig;
+      if (cfg.email) emailConfig = cfg.email;
+    } catch (e) {
+      console.warn(`[i18n-gen] 加载配置文件失败: ${e}`);
+    }
+  }
+
   const wb = xlsx.readFile(excel);
   const langMap: Record<string, Record<string, string>> = {};
-  // 记录冲突: { lang: { key: { existing: string, incoming: string } } }
-  const conflicts: Record<string, Record<string, { existing: string; incoming: string }>> = {};
+  const conflicts: ConflictMap = {};
   
-  // 遍历所有工作表
-  wb.SheetNames.forEach(sheetName => {
+  // 遍历所有工作表，构建 langMap
+  wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(ws);
     rows.forEach((row: any) => {
+      if (!row.key) return;
       Object.keys(row).forEach((k) => {
         if (k !== 'key' && k !== 'file' && k !== 'line' && k !== 'gitlab' && k !== 'value') {
           if (!langMap[k]) langMap[k] = {};
@@ -99,24 +224,27 @@ export function genCommand(opts: any) {
       });
     });
   });
-  
-  // 第一阶段：预检测冲突（严格模式：一旦发现冲突直接终止，不写任何语言包文件）
+
+  // 检测冲突（非阻塞，仅用于生成报告和发送邮件）
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
-    if (!fs.existsSync(outputPath)) return; // 无旧文件，不会有冲突
+    if (!fs.existsSync(outputPath)) return;
     try {
-      const existingContent = fs.readFileSync(outputPath, 'utf8');
-      const existingLangMap = JSON.parse(existingContent);
+      const existingLangMap: Record<string, string> = JSON.parse(
+        fs.readFileSync(outputPath, 'utf8')
+      );
       Object.keys(langMap[lang]).forEach((k) => {
         if (Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
           const oldVal = existingLangMap[k];
           const newVal = langMap[lang][k];
-            if (oldVal !== newVal) {
-              if (!conflicts[lang]) conflicts[lang] = {};
-              if (!conflicts[lang][k]) {
-                conflicts[lang][k] = { existing: oldVal, incoming: newVal };
-              }
-            }
+          if (oldVal !== newVal) {
+            if (!conflicts[lang]) conflicts[lang] = {};
+            conflicts[lang][k] = {
+              existing: oldVal,
+              incoming: newVal,
+              zh: langMap['zh']?.[k],
+            };
+          }
         }
       });
     } catch (e) {
@@ -126,107 +254,53 @@ export function genCommand(opts: any) {
 
   const hadConflicts = Object.keys(conflicts).length > 0;
   if (hadConflicts) {
-    // 若提供 conflictReport，则尝试读取并应用选择
-    let allResolved = false;
-    if (conflictReport && fs.existsSync(conflictReport)) {
-      try {
-        const reportJson = JSON.parse(fs.readFileSync(conflictReport, 'utf8'));
-        // 验证并应用选择
-        allResolved = true;
-        Object.entries(conflicts).forEach(([lang, ks]) => {
-          const langReport = reportJson[lang];
-          if (!langReport) { allResolved = false; return; }
-          Object.entries(ks).forEach(([key, pair]) => {
-            const item = langReport[key];
-            if (!item || typeof item !== 'object') { allResolved = false; return; }
-            const sel = item.selected;
-            if (sel == null) { allResolved = false; return; }
-            if (!langMap[lang]) langMap[lang] = {};
-            if (sel === 'existing') {
-              // 保留旧值
-              langMap[lang][key] = pair.existing;
-            } else if (sel === 'incoming') {
-              // 维持新值（langMap 已设为 incoming）
-              // 确保存在
-              langMap[lang][key] = pair.incoming;
-            } else if (typeof sel === 'string') {
-              // 自定义覆盖值
-              langMap[lang][key] = sel;
-            } else {
-              allResolved = false;
-            }
-          });
-        });
-      } catch (e) {
-        console.warn(`读取冲突报告失败，将生成新的报告: ${e}`);
-      }
+    const summary = Object.entries(conflicts)
+      .map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`)
+      .join(', ');
+    console.warn(`[i18n-gen] 检测到翻译冲突 (${summary})，已自动使用新值覆盖，详见冲突报告。`);
+
+    // 写入冲突报告文件
+    const reportPath = conflictReport || path.join(out, 'conflicts.json');
+    try {
+      fs.mkdirSync(path.dirname(path.resolve(reportPath)), { recursive: true });
+      fs.writeFileSync(reportPath, JSON.stringify(conflicts, null, 2), 'utf8');
+      console.log(`[i18n-gen] 冲突报告已写入: ${reportPath}`);
+    } catch (e) {
+      console.warn(`[i18n-gen] 写入冲突报告失败: ${e}`);
     }
 
-    if (!allResolved) {
-      const summary = Object.entries(conflicts).map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`).join(', ');
-      console.error(`发现翻译冲突 (${summary})。需先在冲突报告中选择处理方式后再重试。`);
-      try {
-        fs.mkdirSync(out, { recursive: true });
-        const reportPath = path.join(out, 'conflicts.json');
-        // 如果已有旧的 conflicts.json，直接覆盖（保留简洁性）；如需历史版本可自行备份。
-        const selectable = Object.fromEntries(
-          Object.entries(conflicts).map(([lang, ks]) => [
-            lang,
-            Object.fromEntries(
-              Object.entries(ks).map(([key, pair]) => [
-                key,
-                { 
-                  existing: pair.existing, 
-                  incoming: pair.incoming, 
-                  zh: langMap['zh']?.[key] || '', 
-                  selected: 'incoming' 
-                }
-              ])
-            )
-          ])
-        );
-        fs.writeFileSync(reportPath, JSON.stringify(selectable, null, 2), 'utf8');
-        console.error(`冲突详情已写入: ${reportPath}`);
-        console.error('编辑该文件，将 selected 设为 "existing" | "incoming" 或自定义字符串，然后使用 --conflict-report 指向该文件再次执行。');
-      } catch (e) {
-        console.warn(`写入冲突报告失败: ${e}`);
-      }
-      throw new Error('存在未解决的翻译冲突，生成过程已中断。');
-    } else {
-      console.log('所有冲突已根据报告选择处理，继续生成语言包。');      // 删除已使用的冲突报告文件
-      if (conflictReport && fs.existsSync(conflictReport)) {
-        try {
-          fs.unlinkSync(conflictReport);
-          console.log(`已删除冲突报告: ${conflictReport}`);
-        } catch (e) {
-          console.warn(`删除冲突报告失败: ${e}`);
-        }
-      }    
+    // 发送邮件（有冲突）
+    if (emailConfig) {
+      await sendGenEmail(langMap, conflicts, emailConfig);
     }
   }
 
-  // 第二阶段：写入文件（只有在没有冲突时才执行）
+  // 写入语言包文件（新值覆盖旧值，不再阻塞）
   fs.mkdirSync(out, { recursive: true });
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
-    let finalMap = { ...langMap[lang] };
-    let existingLangMap: Record<string, string> | null = null;
+    let finalMap: Record<string, string> = { ...langMap[lang] };
     if (fs.existsSync(outputPath)) {
       try {
-        existingLangMap = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+        const existingLangMap: Record<string, string> = JSON.parse(
+          fs.readFileSync(outputPath, 'utf8')
+        );
+        // existing 在前，langMap 在后 → 新值覆盖旧值
+        finalMap = { ...existingLangMap, ...finalMap };
       } catch (e) {
         console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);
       }
-    }
-    if (existingLangMap) {
-      // 没有冲突（否则已提前退出），直接合并：新值覆盖旧值
-      finalMap = { ...existingLangMap, ...finalMap };
     }
     fs.writeFileSync(outputPath, JSON.stringify(finalMap, null, 2), 'utf8');
     console.log(`生成: ${lang}.json`);
   });
 
   console.log('语言包生成完成');
+
+  // 无冲突时也发邮件（生成摘要）
+  if (emailConfig && !hadConflicts) {
+    await sendGenEmail(langMap, {}, emailConfig);
+  }
 
   // 生成语言包后，合并到主 xlsx 并删除当前 xlsx
   if (master) {

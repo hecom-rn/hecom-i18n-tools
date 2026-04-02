@@ -326,54 +326,143 @@ hecom-i18n-tools replace [options]
 hecom-i18n-tools gen [options]
 
 选项:
-  --excel <file>         Excel 翻译文件路径
-  --out <dir>            输出语言包目录（生成 zh-CN.json / en-US.json 等）
-  --master <file>        主 Excel 文件路径（可选）。若提供：
-                         - 完成语言包生成后，将当前 Excel 合并入主表（按工作表直接追加，不去重）
-                         - 主表不存在将创建（直接移动当前 Excel 为主表）
-                         - 合并后删除当前 Excel（若与主表路径不同）
-  -h, --help             显示帮助信息
+  --excel <file>           Excel 翻译文件路径
+  --out <dir>              输出语言包目录（生成 zh-CN.json / en-US.json 等）
+  --master <file>          主 Excel 文件路径（可选）。若提供：
+                           - 完成语言包生成后，将当前 Excel 合并入主表
+                           - 主表不存在将创建
+                           - 合并后删除当前 Excel（若与主表路径不同）
+  --conflict-report <file> 冲突报告输出路径（默认: <out>/conflicts.json）
+  --config <file>          配置文件路径（可包含邮件通知配置）
+  -h, --help               显示帮助信息
 ```
 
-  ##### 冲突处理与可选合并
+##### 冲突处理
 
-  当生成阶段检测到同一语言同一 key 旧语言包与新 Excel 中出现不同翻译，会生成“冲突报告”并中断（不写入任何语言包文件）。报告文件结构示例：
+当检测到同一语言同一 key 在旧语言包与新 Excel 中存在不同翻译时，工具会：
 
-  ```jsonc
-  {
-    "en": {
-      "i18n_xxx123": {
-        "existing": "旧翻译",
-        "incoming": "新翻译",
-        "selected": "incoming" // 可编辑：incoming | existing | 自定义字符串
-      }
+1. **自动使用新值覆盖旧值**（不再阻塞流程）
+2. **生成冲突报告**写入 `--conflict-report` 指定路径（默认 `<out>/conflicts.json`）
+3. **发送邮件通知**（需在配置文件中配置 `email` 字段，见下方邮件配置说明）
+
+冲突报告结构：
+```json
+{
+  "en": {
+    "i18n_xxx123": {
+      "existing": "旧翻译（已被覆盖）",
+      "incoming": "新翻译（写入文件）",
+      "zh": "中文原文"
     }
   }
-  ```
+}
+```
 
-  处理流程：
-  1. 首次出现冲突：工具会在 `--out` 目录写固定文件 `conflicts.json`，默认 `selected` 为 `incoming`。
-  2. 你可以逐个编辑 `selected` 字段：
-     - `incoming`：采用新 Excel 翻译（默认）
-     - `existing`：保留旧语言包翻译
-     - 任意字符串：使用你手动填写的覆盖值
-  3. 重新执行命令并指定该报告：
+#### translate 命令
 
-  ```bash
-  hecom-i18n-tools gen --excel=i18n/scan-result.xlsx --out=src/locales --conflict-report=src/locales/conflicts-2025-11-24T03-00-53.json
-  ```
+批量使用 AI（阿里云 DashScope Qwen）翻译 Excel 中空白的翻译列，相比逐条调用更节省 Token。
 
-  全部冲突都有效选择后将继续生成语言包。若报告缺失或仍有未选项，会再次生成新的报告并中断。
+**前置依赖（Python）：**
+```bash
+pip install pandas openpyxl dashscope
+```
 
-  新增参数：
-  | 参数 | 描述 |
-  |------|------|
-  | --conflict-report <file> | 指向已编辑完成的冲突报告文件以自动应用选择并继续生成 |
+```bash
+hecom-i18n-tools translate [options]
 
-  注意：
-  * 冲突判定只比较旧文件与新 Excel 对同 key 的字符串不相等情况。
-  * 报告中的语言 / key 必须与当前检测到的冲突集合匹配；缺失或无效将视为未解决。
-  * 编辑后可提交到版本库，便于代码审核时查看翻译决策。
+选项:
+  -e, --excel <file>        输入 Excel 文件路径
+  -o, --out <file>          输出 Excel 文件路径（可与 --excel 相同，原地覆盖）
+  -k, --api-key <key>       DashScope API Key（阿里云百炼控制台获取）
+  --keys <keys>             仅翻译指定 key（逗号分隔，不填则翻译所有空白单元格）
+  --langs <langs>           仅翻译指定语言列（逗号分隔，如 en,th,ja，不填则翻译全部）
+  --python <path>           Python 可执行路径（默认: python3）
+  --prompt <template>       自定义 Prompt 模板（需含 {text} 和 {target_lang}）
+  --prompt-file <file>      Prompt 模板文件路径
+  -h, --help                显示帮助信息
+```
+
+示例：
+```bash
+# 翻译所有空白列
+hecom-i18n-tools translate -e version.xlsx -o version.xlsx -k sk-xxxxxxxxxxxx
+
+# 只翻译指定语言
+hecom-i18n-tools translate -e version.xlsx -o version.xlsx -k sk-xxxx --langs en,th
+
+# 只翻译指定 key
+hecom-i18n-tools translate -e version.xlsx -o version.xlsx -k sk-xxxx --keys i18n_abc,i18n_def
+```
+
+> **说明**：底层调用 `scripts/translate_cli.py`，等同于原有 `app.py` 的翻译功能，
+> 但去掉了 Streamlit Web UI，改为纯命令行以便集成到 CI/CD 流程。
+
+#### flow 命令（一键流程）
+
+将 **扫描 → AI翻译 → 生成语言包** 合并为一条命令。
+
+```bash
+hecom-i18n-tools flow [options]
+
+选项:
+  -s, --src <paths>            源代码目录，支持逗号分隔（必填）
+  -e, --excel <file>           中间 Excel 文件路径（必填）
+  -o, --out <dir>              语言包输出目录（必填）
+  -g, --gitlab <url>           GitLab 仓库 URL 前缀
+  -c, --config <file>          配置文件路径（含 email 等配置）
+  -m, --master <file>          主 Excel 文件路径（可选）
+  -k, --api-key <key>          DashScope API Key（不填则跳过翻译步骤）
+  --langs <langs>              仅翻译指定语言列（逗号分隔）
+  --python <path>              Python 可执行路径（默认: python3）
+  --prompt-file <file>         Prompt 模板文件路径
+  -r, --conflict-report <file> 冲突报告输出路径
+  -h, --help                   显示帮助信息
+```
+
+示例（替代你项目中的 `i18n:scan` + 手动翻译 + `i18n:gen`）：
+```bash
+hecom-i18n-tools flow \
+  --src=standard,core,customization \
+  --excel=core/util/i18n/xlsx/version.xlsx \
+  --out=core/util/i18n/locales \
+  --gitlab=https://newgitlab.hecom.cn/rn/RNModules/-/blob/release \
+  --config=i18nScannerOptions.js \
+  --master=core/util/i18n/xlsx/master.xlsx \
+  --api-key=sk-xxxxxxxxxxxx \
+  --conflict-report=core/util/i18n/locales/conflicts.json
+```
+
+### 邮件通知配置
+
+在配置文件（`--config` 指定，如 `i18nScannerOptions.js`）中添加 `email` 字段，
+`gen` / `flow` 命令检测到翻译冲突时将自动发送 HTML 格式的冲突报告邮件。
+
+```js
+// i18nScannerOptions.js
+module.exports = {
+  // ... 现有的 ignoreFiles、ignoreLogObjects 等配置 ...
+
+  // 邮件通知配置（冲突时自动发送）
+  email: {
+    smtp: {
+      host: 'smtp.exmail.qq.com',   // SMTP 服务器
+      port: 465,
+      secure: true,                 // true = SSL/TLS
+      auth: {
+        user: 'sender@example.com',
+        pass: 'your_smtp_password', // 建议使用独立授权码
+      },
+    },
+    from: 'sender@example.com',
+    to: [
+      'dev1@example.com',           // 支持多个收件人
+      'dev2@example.com',
+    ],
+  },
+};
+```
+
+> 邮件功能依赖 `nodemailer`，已包含在工具依赖中，无需额外安装。
 
   #### static-consts 命令
   扫描全局 `const` 声明中值为：
