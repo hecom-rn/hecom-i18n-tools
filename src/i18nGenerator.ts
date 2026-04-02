@@ -127,7 +127,7 @@ async function sendGenEmail(
     return;
   }
 
-  const transporter = nodemailer.createTransporter({
+  const transporter = nodemailer.createTransport({
     host: emailConfig.smtp.host,
     port: emailConfig.smtp.port,
     secure: emailConfig.smtp.secure,
