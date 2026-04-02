@@ -71,7 +71,8 @@ function buildTemplateFullValue(node: any): TemplateFullValueResult {
   const typeIndexMap: string[] = [];
   for (let i = 0; i < node.quasis.length; i++) {
     const quasi = node.quasis[i];
-    fullValue += quasi.value.raw;
+    // 与 scanner 保持一致：优先使用 cooked 值（处理 \n 等转义序列），非法转义时回退 raw
+    fullValue += (quasi.value.cooked ?? quasi.value.raw);
     if (i < node.expressions.length) {
       const expr = node.expressions[i];
       expressions.push(expr);
@@ -402,7 +403,13 @@ export function replaceCommand(opts: any) {
     const hasPlaceholderStyle = candidateValues.some(v => /\{\{.+?\}\}/.test(v));
     let possibleHits: string[] = [];
     if (!hasPlaceholderStyle) {
-      possibleHits = candidateValues.filter(v => v && code.includes(v));
+      possibleHits = candidateValues.filter(v => {
+        if (!v) return false;
+        if (code.includes(v)) return true;
+        // 兼容：Excel 中存储的是 cooked 值（真实换行符等），源码中可能是转义序列 \n / \t
+        const reEscaped = v.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+        return reEscaped !== v && code.includes(reEscaped);
+      });
       if (possibleHits.length === 0) {
         return; // 无需处理
       }
