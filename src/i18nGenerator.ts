@@ -161,7 +161,7 @@ async function sendGenEmail(
   );
 
   const conflictSection = hasConflicts ? `
-    <h3 style="color:#c0392b">冲突详情（共 ${conflictCount} 条，已自动使用新值覆盖）</h3>
+    <h3 style="color:#c0392b">冲突详情（共 ${conflictCount} 条，已保留原有值，如需更新请手动处理）</h3>
     <table border="1" cellpadding="0" cellspacing="0"
            style="border-collapse:collapse;font-size:13px;width:100%">
       <thead style="background:#f5f5f5">
@@ -169,7 +169,7 @@ async function sendGenEmail(
           <th style="padding:6px 8px">语言</th>
           <th style="padding:6px 8px">Key</th>
           <th style="padding:6px 8px">中文原文</th>
-          <th style="padding:6px 8px">原有值（被覆盖）</th>
+          <th style="padding:6px 8px">原有值（已保留）</th>
           <th style="padding:6px 8px">新值</th>
         </tr>
       </thead>
@@ -270,6 +270,8 @@ export async function genCommand(opts: any) {
         if (Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
           const oldVal = existingLangMap[k];
           const newVal = langMap[lang][k];
+          // 跳过 Excel 中该 key 无有效值的情况（空格/undefined），避免产生无意义的冲突记录
+          if (newVal == null || String(newVal).trim() === '') return;
           if (oldVal !== newVal) {
             if (!conflicts[lang]) conflicts[lang] = {};
             conflicts[lang][k] = {
@@ -290,7 +292,7 @@ export async function genCommand(opts: any) {
     const summary = Object.entries(conflicts)
       .map(([lang, ks]) => `${lang}:${Object.keys(ks).length}`)
       .join(', ');
-    console.warn(`[i18n-gen] 检测到翻译冲突 (${summary})，已自动使用新值覆盖，详见冲突报告。`);
+    console.warn(`[i18n-gen] 检测到翻译差异 (${summary})，已保留原有值，Excel 中的差异已记录到冲突报告。`);
 
     // 写入冲突报告文件
     const reportPath = conflictReport || path.join(out, 'conflicts.json');
@@ -310,7 +312,7 @@ export async function genCommand(opts: any) {
     }
   }
 
-  // 写入语言包文件（新值覆盖旧值，不再阻塞）
+  // 写入语言包文件（原有值优先，新 key 追加到末尾）
   fs.mkdirSync(out, { recursive: true });
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
@@ -320,8 +322,13 @@ export async function genCommand(opts: any) {
         const existingLangMap: Record<string, string> = JSON.parse(
           fs.readFileSync(outputPath, 'utf8')
         );
-        // existing 在前，langMap 在后 → 旧值覆盖新值
-        finalMap = {...finalMap,  ...existingLangMap };
+        // 以原有 JSON 为基础（保留原有值及其顺序），仅将 langMap 中的新 key 追加到末尾
+        finalMap = { ...existingLangMap };
+        Object.keys(langMap[lang]).forEach((k) => {
+          if (!Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
+            finalMap[k] = langMap[lang][k];
+          }
+        });
       } catch (e) {
         console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);
       }
