@@ -115,10 +115,11 @@ program
 
 program
   .command('flow')
-  .description('一键流程：扫描 → AI翻译 → 生成语言包')
+  .description('一键流程：扫描 → 替换代码 → AI翻译 → 生成语言包')
   .requiredOption('-s, --src <src>', '源代码目录，支持逗号分隔')
   .requiredOption('-e, --excel <excel>', '中间 Excel 文件路径')
   .requiredOption('-o, --out <out>', '语言包输出目录')
+  .requiredOption('-i, --importPath <importPath>', 'i18n 工具模块的 importPath，如 core/util/i18n')
   .option('-g, --gitlab <gitlab>', 'GitLab 仓库 URL 前缀')
   .option('-c, --config <config>', '配置文件路径（含 email 等配置）')
   .option('-m, --master <master>', '主 Excel 文件路径（可选）')
@@ -127,13 +128,15 @@ program
   .option('--python <python>', 'Python 可执行路径（默认: python3）')
   .option('--prompt-file <promptFile>', 'Prompt 模板文件路径')
   .option('-r, --conflict-report <conflictReport>', '冲突报告输出路径')
+  .option('-l, --fixLint <fixLint>', '替换后是否运行 Prettier 格式化（默认: true）')
+  .option('-p, --prettier-config <prettierConfig>', 'Prettier 配置文件路径')
   .action(async (opts) => {
     // 支持逗号分隔 src
     if (typeof opts.src === 'string' && opts.src.includes(',')) {
       opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
 
-    console.log('\n========== [1/3] 扫描中文文本 ==========');
+    console.log('\n========== [1/4] 扫描中文文本 ==========');
     await scanCommand({
       src:    opts.src,
       out:    opts.excel,
@@ -141,8 +144,16 @@ program
       config: opts.config,
     });
 
+    console.log('\n========== [2/4] 替换代码为 i18n 调用 ==========');
+    replaceCommand({
+      excel:          opts.excel,
+      importPath:     opts.importPath,
+      fixLint:        opts.fixLint ?? 'true',
+      prettierConfig: opts.prettierConfig,
+    });
+
     if (opts.apiKey) {
-      console.log('\n========== [2/3] AI 翻译空白列 ==========');
+      console.log('\n========== [3/4] AI 翻译空白列 ==========');
       runPythonTranslate({
         excel:      opts.excel,
         out:        opts.excel,   // 原地覆盖
@@ -152,10 +163,10 @@ program
         promptFile: opts.promptFile,
       });
     } else {
-      console.log('\n[2/3] 未提供 --api-key，跳过翻译步骤。');
+      console.log('\n[3/4] 未提供 --api-key，跳过翻译步骤。');
     }
 
-    console.log('\n========== [3/3] 生成语言包 ==========');
+    console.log('\n========== [4/4] 生成语言包 ==========');
     await genCommand({
       excel:          opts.excel,
       out:            opts.out,
@@ -181,3 +192,4 @@ program
   });
 
 program.parse(process.argv);
+

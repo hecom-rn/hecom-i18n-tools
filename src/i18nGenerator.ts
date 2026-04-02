@@ -100,7 +100,8 @@ type ConflictMap = Record<
 async function sendGenEmail(
   langMap: Record<string, Record<string, string>>,
   conflicts: ConflictMap,
-  emailConfig: EmailConfig
+  emailConfig: EmailConfig,
+  conflictReportPath?: string
 ): Promise<void> {
   let nodemailer: any;
   try {
@@ -108,6 +109,19 @@ async function sendGenEmail(
   } catch {
     console.warn(
       '[i18n-gen] 未安装 nodemailer，跳过邮件发送。请运行: npm install nodemailer'
+    );
+    return;
+  }
+
+  if (!emailConfig.smtp?.host || !emailConfig.from || !emailConfig.to) {
+    console.warn(
+      '[i18n-gen] email 配置不完整，跳过邮件发送。\n' +
+      '请确保 i18nScannerOptions.js 中配置了完整的 email 对象，格式如下：\n' +
+      '  email: {\n' +
+      '    smtp: { host: "smtp.xxx.com", port: 465, secure: true, auth: { user: "...", pass: "..." } },\n' +
+      '    from: "sender@xxx.com",\n' +
+      '    to: ["mashuai@hecom.cn"]\n' +
+      '  }'
     );
     return;
   }
@@ -173,14 +187,32 @@ async function sendGenEmail(
     ? `[i18n] 语言包生成报告 ${date}（⚠️ ${conflictCount} 条冲突）`
     : `[i18n] 语言包生成报告 ${date}（✅ 无冲突）`;
 
+  const attachments: any[] = [];
+  if (conflictReportPath && fs.existsSync(conflictReportPath)) {
+    attachments.push({
+      filename: path.basename(conflictReportPath),
+      path: conflictReportPath,
+    });
+  }
+
   try {
     await transporter.sendMail({
       from: emailConfig.from,
       to: recipients,
       subject,
       html,
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
     console.log(`[i18n-gen] 生成报告邮件已发送至: ${recipients}`);
+    // 作为附件发送成功后删除 conflicts.json，避免提交到代码库
+    if (conflictReportPath && fs.existsSync(conflictReportPath)) {
+      try {
+        fs.unlinkSync(conflictReportPath);
+        console.log(`[i18n-gen] 已删除冲突报告文件: ${conflictReportPath}`);
+      } catch (e) {
+        console.warn(`[i18n-gen] 删除冲突报告文件失败: ${e}`);
+      }
+    }
   } catch (e) {
     console.warn(`[i18n-gen] 发送生成报告邮件失败: ${e}`);
   }
@@ -269,9 +301,11 @@ export async function genCommand(opts: any) {
       console.warn(`[i18n-gen] 写入冲突报告失败: ${e}`);
     }
 
-    // 发送邮件（有冲突）
+    // 发送邮件（有冲突），conflicts.json 作为附件，发送后自动删除
     if (emailConfig) {
-      await sendGenEmail(langMap, conflicts, emailConfig);
+      await sendGenEmail(langMap, conflicts, emailConfig, reportPath);
+    } else {
+      console.warn('[i18n-gen] 未找到 email 配置，跳过邮件发送。请在配置文件中添加 email 字段。');
     }
   }
 
@@ -297,9 +331,13 @@ export async function genCommand(opts: any) {
 
   console.log('语言包生成完成');
 
-  // 无冲突时也发邮件（生成摘要）
-  if (emailConfig && !hadConflicts) {
-    await sendGenEmail(langMap, {}, emailConfig);
+  // 无冲突时也发邮件（生成摘要，无附件）
+  if (!hadConflicts) {
+    if (emailConfig) {
+      await sendGenEmail(langMap, {}, emailConfig);
+    } else {
+      console.warn('[i18n-gen] 未找到 email 配置，跳过邮件发送。请在配置文件中添加 email 字段。');
+    }
   }
 
   // 生成语言包后，合并到主 xlsx 并删除当前 xlsx
