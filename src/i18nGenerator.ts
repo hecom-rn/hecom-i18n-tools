@@ -105,7 +105,8 @@ async function sendGenEmail(
 ): Promise<void> {
   let nodemailer: any;
   try {
-    nodemailer = require('nodemailer');
+    const _nm = require('nodemailer');
+    nodemailer = _nm.default || _nm;
   } catch {
     console.warn(
       '[i18n-gen] 未安装 nodemailer，跳过邮件发送。请运行: npm install nodemailer'
