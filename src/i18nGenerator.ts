@@ -320,8 +320,8 @@ export async function genCommand(opts: any) {
         const existingLangMap: Record<string, string> = JSON.parse(
           fs.readFileSync(outputPath, 'utf8')
         );
-        // existing 在前，langMap 在后 → 新值覆盖旧值
-        finalMap = { ...existingLangMap, ...finalMap };
+        // existing 在前，langMap 在后 → 旧值覆盖新值
+        finalMap = {...finalMap,  ...existingLangMap };
       } catch (e) {
         console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);
       }

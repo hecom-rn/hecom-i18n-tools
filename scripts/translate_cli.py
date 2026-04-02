@@ -87,14 +87,20 @@ def validate_translation_script(text, target_lang):
     return True, None
 
 
+NEWLINE_PLACEHOLDER = '{{NEWLINE}}'
+
+
 def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
     if not text or (hasattr(pd, 'isna') and pd.isna(text)) or str(text).strip() == "":
         return None, None
 
     dashscope.api_key = api_key
 
+    # 用占位符保护换行符，防止 AI 翻译时丢失
+    text_for_translation = str(text).replace('\n', NEWLINE_PLACEHOLDER)
+
     try:
-        prompt = prompt_template.format(target_lang=target_lang, text=text)
+        prompt = prompt_template.format(target_lang=target_lang, text=text_for_translation)
         if retry_count > 0:
             prompt += (
                 f"\nIMPORTANT: You MUST translate into {target_lang}. "
@@ -111,6 +117,8 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
         )
         if response.status_code == HTTPStatus.OK:
             result = response.output.choices[0].message.content.strip()
+            # 将占位符还原为真实换行符
+            result = result.replace(NEWLINE_PLACEHOLDER, '\n')
             is_valid, _ = validate_translation_script(result, target_lang)
             if not is_valid and retry_count < 1:
                 print(f"  [retry] Validation failed for {target_lang}, retrying...")
