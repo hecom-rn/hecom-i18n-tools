@@ -88,6 +88,12 @@ function shouldSkipLiteral(path: any): boolean {
   if (isInTsType(path)) return true;
   if (isInFunctionReturnType(path)) return true;
   if (isInStyleSheetCreate(path)) return true;
+  // 对象属性的 key（非计算属性）不能替换为 CallExpression
+  if (path.parentPath?.isObjectProperty() && path.parentPath.node.key === path.node && !path.parentPath.node.computed) return true;
+  // 对象/类成员的方法名、类属性 key 等同理
+  if (path.parentPath?.isObjectMethod() && path.parentPath.node.key === path.node) return true;
+  if (path.parentPath?.isClassProperty() && path.parentPath.node.key === path.node && !path.parentPath.node.computed) return true;
+  if (path.parentPath?.isClassMethod() && path.parentPath.node.key === path.node && !path.parentPath.node.computed) return true;
   return false;
 }
 
