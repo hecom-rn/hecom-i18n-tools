@@ -45,6 +45,9 @@ DEFAULT_PROMPT = (
 
 MAX_WORKERS = 5
 
+RESERVED_HEADERS = {'key', 'file', 'line', 'gitlab', 'value'}
+DEFAULT_SOURCE_LANG = 'zh'
+
 
 # -----------------------------------------------------------------------------
 # Core translation logic (extracted from app.py, Streamlit-free)
@@ -85,6 +88,53 @@ def validate_translation_script(text, target_lang):
         if not is_text_in_script(text, ranges):
             return False, f"Translation does not contain characters for language '{target_lang}'"
     return True, None
+
+
+def identify_columns(df):
+    """Identify column roles by header name (case-insensitive).
+
+    - Reserved headers (key/file/line/gitlab/value) are excluded from language columns.
+    - Source language defaults to 'zh'; falls back to the first non-reserved column.
+    - All other non-reserved columns are treated as language columns.
+
+    Returns:
+        dict with keys: key_col, source_col, lang_cols,
+                        file_col, line_col, gitlab_col, value_col
+    """
+    norm_to_orig = {str(col).strip().lower(): col for col in df.columns}
+
+    reserved_orig = {role: norm_to_orig[role] for role in RESERVED_HEADERS if role in norm_to_orig}
+
+    if 'key' not in reserved_orig:
+        raise ValueError(
+            f"Required column 'key' not found in headers: {list(df.columns)}"
+        )
+
+    reserved_set = set(reserved_orig.values())
+    lang_cols = [col for col in df.columns if col not in reserved_set]
+
+    if not lang_cols:
+        raise ValueError(
+            f"No language columns found (only reserved columns present). Headers: {list(df.columns)}"
+        )
+
+    source_col = None
+    for col in lang_cols:
+        if str(col).strip().lower() == DEFAULT_SOURCE_LANG:
+            source_col = col
+            break
+    if source_col is None:
+        source_col = lang_cols[0]
+
+    return {
+        'key_col':    reserved_orig['key'],
+        'source_col': source_col,
+        'lang_cols':  lang_cols,
+        'file_col':   reserved_orig.get('file'),
+        'line_col':   reserved_orig.get('line'),
+        'gitlab_col': reserved_orig.get('gitlab'),
+        'value_col':  reserved_orig.get('value'),
+    }
 
 
 NEWLINE_PLACEHOLDER = '{{NEWLINE}}'
@@ -134,21 +184,29 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
 def process_sheet(df, api_key, prompt_template, sheet_name,
                   target_keys=None, target_langs=None):
     """Translate empty cells in a sheet. Returns modified DataFrame."""
-    if len(df.columns) < 5:
-        print(f"  Warning: Sheet '{sheet_name}' has too few columns, skipping.", file=sys.stderr)
+    try:
+        meta = identify_columns(df)
+    except ValueError as e:
+        print(f"  Warning: Sheet '{sheet_name}': {e}", file=sys.stderr)
         return df
 
-    source_col = df.columns[1]          # 'zh'
-    all_target_cols = df.columns[2:-3]   # language columns
-    key_col = df.columns[-1]             # 'key'
+    key_col       = meta['key_col']
+    source_col    = meta['source_col']
+    all_lang_cols = meta['lang_cols']
+
+    target_cols = [c for c in all_lang_cols if c != source_col]
 
     if target_langs is not None:
-        cols = [c for c in all_target_cols if str(c) in target_langs]
+        target_langs_norm = {str(l).strip().lower() for l in target_langs}
+        cols = [c for c in target_cols
+                if str(c).strip().lower() in target_langs_norm]
         if not cols:
-            print(f"  Warning: None of the specified langs found in '{sheet_name}'.", file=sys.stderr)
+            print(f"  Warning: None of the specified langs found in '{sheet_name}'. "
+                  f"Requested: {sorted(target_langs_norm)}, "
+                  f"Available: {[str(c) for c in target_cols]}", file=sys.stderr)
             return df
     else:
-        cols = all_target_cols
+        cols = target_cols
 
     tasks = []
     for idx, row in df.iterrows():
