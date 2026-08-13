@@ -175,9 +175,15 @@ Expected: `testScanDefaultLanguages` 失败（当前 wsData 仍硬编码，运�
 
 注：本任务的"失败"通过 Task 3 的测试反映（Task 3 测试需要 languages 配置生效，而当前实现不读取该字段）。如果 Task 2 测试已通过（因硬编码恰好满足），在 Step 5 完成 Task 3 的实现后，整体行为仍正确；Step 5 之后再跑一次 Step 3 验证全部测试绿。
 
-- [ ] **Step 4: 在 `src/scanner.ts` 中新增 `DEFAULT_LANGUAGES` 并改造 `scanCommand`**
+- [ ] **Step 4: 在 `src/scanner.ts` 中新增模块级 `DEFAULT_LANGUAGES` 并改造 `scanCommand`**
 
-将 line 464-478 现有块：
+4a. 在 `src/scanner.ts` 顶部（line 17 之后、`interface ScanOptions` 之前）新增模块级常量：
+
+```ts
+const DEFAULT_LANGUAGES = ['en', 'es', 'pt', 'th'];
+```
+
+4b. 将 line 464-478 现有块：
 
 ```ts
     const wsData = await Promise.all(all.map(async (row) => {
@@ -200,7 +206,6 @@ Expected: `testScanDefaultLanguages` 失败（当前 wsData 仍硬编码，运�
 替换为：
 
 ```ts
-    const DEFAULT_LANGUAGES = ['en', 'es', 'pt', 'th'];
     const languages: string[] = Array.isArray(configOptions.languages)
       ? configOptions.languages.filter((l): l is string => typeof l === 'string' && l.length > 0)
       : DEFAULT_LANGUAGES;
