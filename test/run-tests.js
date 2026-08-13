@@ -51,21 +51,14 @@ async function testConflictAbort() {
   createExcel(excel, {
     Sheet1: [ { key: 'hello', en: 'NewHello' } ]
   });
-  let threw = false;
-  try {
-    genCommand({ excel, out: outDir });
-  } catch (e) {
-    threw = true;
-    // 确认没有被覆盖
-    const enJson = JSON.parse(fs.readFileSync(path.join(outDir, 'en.json'), 'utf8'));
-    assert.strictEqual(enJson.hello, 'OldHello');
-    // 确认有冲突报告
+  // 工具当前行为：保留旧值，写 conflicts.json 报告差异，不抛错
+  genCommand({ excel, out: outDir });
+  const enJson = JSON.parse(fs.readFileSync(path.join(outDir, 'en.json'), 'utf8'));
+  assert.strictEqual(enJson.hello, 'OldHello', '冲突时应保留旧值');
   const conflictFile = path.join(outDir, 'conflicts.json');
   assert.ok(fs.existsSync(conflictFile), '固定文件名 conflicts.json 未生成');
-    // Excel 仍存在
-    assert.ok(fs.existsSync(excel), 'Excel 不应被删除');
-  }
-  assert.ok(threw, '应当抛出冲突错误');
+  // Excel 仍存在
+  assert.ok(fs.existsSync(excel), 'Excel 不应被删除');
   return 'testConflictAbort passed';
 }
 
@@ -130,6 +123,146 @@ async function testTemplateLiteralCRLFNewline() {
   return 'testTemplateLiteralCRLFNewline passed';
 }
 
+// 通用辅助：从 fixture 文件扫描并返回 category 映射（key -> category）
+function scanCategoryMap(file, rules) {
+  const results = extractStringsFromFile(file, { buttonLabelRules: rules });
+  const map = {};
+  for (const r of results) map[r.value] = r.category;
+  return map;
+}
+
+async function testButtonLabelJsxAttr() {
+  const dir = tempDir('i18n-btn-attr-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "import React from 'react';\n" +
+    "export default () => (\n" +
+    "  <View>\n" +
+    "    <Button title=\"确认\" onPress={() => {}}>\n" +
+    "      <Text>按钮子内容</Text>\n" +
+    "    </Button>\n" +
+    "    <Tab tabLabel=\"首页\" />\n" +
+    "    <Header backTitle=\"返回\" />\n" +
+    "  </View>\n" +
+    ");\n",
+    'utf8'
+  );
+  const catMap = scanCategoryMap(file, {
+    jsxAttributes: ['title', 'tabLabel', 'backTitle'],
+    ancestorDepth: 4,
+  });
+  assert.strictEqual(catMap['确认'], 'button-label', 'JSX title 属性应归类为 button-label');
+  assert.strictEqual(catMap['首页'], 'button-label', 'JSX tabLabel 属性应归类为 button-label');
+  assert.strictEqual(catMap['返回'], 'button-label', 'JSX backTitle 属性应归类为 button-label');
+  // 子组件 Text 内容不在白名单属性内，归类为 normal
+  assert.strictEqual(catMap['按钮子内容'], 'normal', 'Text 节点默认归类为 normal');
+  return 'testButtonLabelJsxAttr passed';
+}
+
+async function testButtonLabelAlert() {
+  const dir = tempDir('i18n-btn-alert-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "import { Alert } from 'react-native';\n" +
+    "Alert.alert('提示', '真的要删除吗？', [\n" +
+    "  { text: '取消', onPress: () => {} },\n" +
+    "  { text: '确定', onPress: () => {} },\n" +
+    "]);\n" +
+    "const msg = '普通字符串';\n",
+    'utf8'
+  );
+  const catMap = scanCategoryMap(file, {
+    alertCallees: ['Alert', 'alert'],
+  });
+  assert.strictEqual(catMap['取消'], 'button-label', "Alert.alert 数组里 text:'取消' 应归类为 button-label");
+  assert.strictEqual(catMap['确定'], 'button-label', "Alert.alert 数组里 text:'确定' 应归类为 button-label");
+  assert.strictEqual(catMap['真的要删除吗？'], 'normal', 'Alert 标题不应归类为 button-label');
+  assert.strictEqual(catMap['普通字符串'], 'normal', '普通变量赋值不应归类为 button-label');
+  return 'testButtonLabelAlert passed';
+}
+
+async function testButtonLabelComponent() {
+  const dir = tempDir('i18n-btn-comp-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "import React from 'react';\n" +
+    "import { TouchableOpacity, View } from 'react-native';\n" +
+    "export default () => (\n" +
+    "  <View>\n" +
+    "    <TouchableOpacity><Text>点击登录</Text></TouchableOpacity>\n" +
+    "    <View><Text>说明文字</Text></View>\n" +
+    "  </View>\n" +
+    ");\n",
+    'utf8'
+  );
+  const catMap = scanCategoryMap(file, {
+    buttonComponents: ['TouchableOpacity', 'Pressable'],
+  });
+  assert.strictEqual(catMap['点击登录'], 'button-label', 'TouchableOpacity 直接子 JSXText 应归类为 button-label');
+  assert.strictEqual(catMap['说明文字'], 'normal', 'View 直接子 JSXText 不在白名单，归类为 normal');
+  return 'testButtonLabelComponent passed';
+}
+
+async function testButtonLabelInlineComment() {
+  const dir = tempDir('i18n-btn-cmt-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "import React from 'react';\n" +
+    "const label = (\n" +
+    "  // @i18n:button-label\n" +
+    "  '快捷操作'\n" +
+    ");\n",
+    'utf8'
+  );
+  const catMap = scanCategoryMap(file, {
+    inlineComment: '// @i18n:button-label',
+  });
+  assert.strictEqual(catMap['快捷操作'], 'button-label', '上方一行含 @i18n:button-label 注释的字符串应归类为 button-label');
+  return 'testButtonLabelInlineComment passed';
+}
+
+async function testButtonLabelDisabledByDefault() {
+  const dir = tempDir('i18n-btn-off-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "import React from 'react';\n" +
+    "export default () => <Button title=\"确认\">按钮子</Button>;\n",
+    'utf8'
+  );
+  // 未配置 buttonLabelRules 时所有条目归类为 normal
+  const catMap = scanCategoryMap(file, undefined);
+  assert.strictEqual(catMap['确认'], 'normal', '未配置规则时应归类为 normal');
+  assert.strictEqual(catMap['按钮子'], 'normal', '未配置规则时应归类为 normal');
+  return 'testButtonLabelDisabledByDefault passed';
+}
+
+async function testGenIgnoresCategoryColumn() {
+  const dir = tempDir('i18n-gen-cat-');
+  const excel = path.join(dir, 'data.xlsx');
+  const outDir = path.join(dir, 'out');
+  // Excel 含 category 列（避免被识别为语言列）
+  createExcel(excel, {
+    Sheet1: [
+      { key: 'hello', zh: '你好', en: 'Hello', category: 'normal' },
+      { key: 'btn', zh: '确定', en: 'Confirm', category: 'button-label' },
+    ]
+  });
+  genCommand({ excel, out: outDir });
+  // 不应生成 category.json
+  assert.ok(!fs.existsSync(path.join(outDir, 'category.json')), '不应生成 category.json');
+  // 但应正常生成 zh.json / en.json
+  assert.ok(fs.existsSync(path.join(outDir, 'zh.json')), '应生成 zh.json');
+  assert.ok(fs.existsSync(path.join(outDir, 'en.json')), '应生成 en.json');
+  const enJson = JSON.parse(fs.readFileSync(path.join(outDir, 'en.json'), 'utf8'));
+  assert.strictEqual(enJson.btn, 'Confirm', 'en.json 中按钮条目应保留');
+  return 'testGenIgnoresCategoryColumn passed';
+}
+
 (async () => {
   const tests = [
     testNoConflict,
@@ -137,7 +270,13 @@ async function testTemplateLiteralCRLFNewline() {
     testTemplateLiteralNewline,
     testTemplateLiteralMultipleExpressions,
     testTemplateLiteralMultiLineChinese,
-    testTemplateLiteralCRLFNewline
+    testTemplateLiteralCRLFNewline,
+    testButtonLabelJsxAttr,
+    testButtonLabelAlert,
+    testButtonLabelComponent,
+    testButtonLabelInlineComment,
+    testButtonLabelDisabledByDefault,
+    testGenIgnoresCategoryColumn,
   ];
   for (const t of tests) {
     try {

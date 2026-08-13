@@ -45,7 +45,7 @@ DEFAULT_PROMPT = (
 
 MAX_WORKERS = 5
 
-RESERVED_HEADERS = {'key', 'file', 'line', 'gitlab', 'value'}
+RESERVED_HEADERS = {'key', 'file', 'line', 'gitlab', 'value', 'category'}
 DEFAULT_SOURCE_LANG = 'zh'
 
 
@@ -140,7 +140,7 @@ def identify_columns(df):
 NEWLINE_PLACEHOLDER = '{{NEWLINE}}'
 
 
-def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
+def translate_text(text, target_lang, api_key, prompt_template, retry_count=0, category='normal'):
     if not text or (hasattr(pd, 'isna') and pd.isna(text)) or str(text).strip() == "":
         return None, None
 
@@ -149,15 +149,28 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
     # 用占位符保护换行符，防止 AI 翻译时丢失
     text_for_translation = str(text).replace('\n', NEWLINE_PLACEHOLDER)
 
+    prompt = None
+    # 优先尝试带 {category} 占位符的模板；旧模板无此占位符时回退
     try:
-        prompt = prompt_template.format(target_lang=target_lang, text=text_for_translation)
-        if retry_count > 0:
-            prompt += (
-                f"\nIMPORTANT: You MUST translate into {target_lang}. "
-                "Do NOT return English unless the source text is a proper noun."
+        prompt = prompt_template.format(
+            target_lang=target_lang,
+            text=text_for_translation,
+            category=category,
+        )
+    except (KeyError, IndexError, ValueError):
+        try:
+            prompt = prompt_template.format(
+                target_lang=target_lang,
+                text=text_for_translation,
             )
-    except (KeyError, IndexError, ValueError) as e:
-        prompt = f"Translate the following text to {target_lang}:\n{text}"
+        except (KeyError, IndexError, ValueError) as e:
+            prompt = f"Translate the following text to {target_lang}:\n{text}"
+
+    if retry_count > 0:
+        prompt += (
+            f"\nIMPORTANT: You MUST translate into {target_lang}. "
+            "Do NOT return English unless the source text is a proper noun."
+        )
 
     try:
         response = Generation.call(
@@ -182,7 +195,7 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0):
 
 
 def process_sheet(df, api_key, prompt_template, sheet_name,
-                  target_keys=None, target_langs=None):
+                  target_keys=None, target_langs=None, category_col=None):
     """Translate empty cells in a sheet. Returns modified DataFrame."""
     try:
         meta = identify_columns(df)
@@ -215,6 +228,11 @@ def process_sheet(df, api_key, prompt_template, sheet_name,
         source = row[source_col]
         if pd.isna(source) or str(source).strip() == '':
             continue
+        cat = 'normal'
+        if category_col and category_col in df.columns:
+            cv = row.get(category_col)
+            if not pd.isna(cv) and str(cv).strip():
+                cat = str(cv).strip()
         for lang_col in cols:
             val = row[lang_col]
             if pd.isna(val) or str(val).strip() == '':
@@ -223,6 +241,7 @@ def process_sheet(df, api_key, prompt_template, sheet_name,
                     'col_name': lang_col,
                     'source_text': str(source),
                     'target_lang': str(lang_col),
+                    'category': cat,
                 })
 
     total = len(tasks)
@@ -237,7 +256,7 @@ def process_sheet(df, api_key, prompt_template, sheet_name,
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_map = {
             executor.submit(translate_text, t['source_text'], t['target_lang'],
-                            api_key, prompt_template): t
+                            api_key, prompt_template, 0, t.get('category', 'normal')): t
             for t in tasks
         }
         for future in concurrent.futures.as_completed(future_map):
@@ -280,6 +299,8 @@ def main():
     parser.add_argument('--langs',       help='Comma-separated target language columns, e.g. en,th (all if omitted)')
     parser.add_argument('--prompt',      help='Custom prompt template string (must contain {text} and {target_lang})')
     parser.add_argument('--prompt-file', help='Path to a file containing the prompt template')
+    parser.add_argument('--category-column', default='category',
+                        help='Column name carrying category metadata (default: category). Empty string disables.')
     args = parser.parse_args()
 
     if not os.path.exists(args.excel):
@@ -303,6 +324,7 @@ def main():
 
     target_keys = set(args.keys.split(',')) if args.keys else None
     target_langs = set(args.langs.split(',')) if args.langs else None
+    category_col = args.category_column if args.category_column else None
 
     print(f"Reading: {args.excel}")
     sheets = pd.read_excel(args.excel, sheet_name=None, dtype=str)
@@ -312,7 +334,8 @@ def main():
         print(f"\n=== Sheet: {sheet_name} ===")
         processed[sheet_name] = process_sheet(
             df, args.api_key, prompt_template, sheet_name,
-            target_keys=target_keys, target_langs=target_langs
+            target_keys=target_keys, target_langs=target_langs,
+            category_col=category_col,
         )
 
     out_dir = os.path.dirname(os.path.abspath(args.out))
