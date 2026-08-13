@@ -17,7 +17,8 @@ interface ScanResult {
 }
 
 interface ScanOptions {
-  translate?: (text: string) => Promise<string | undefined>;
+  translate?: (text: string, lang?: string) => Promise<string | undefined>;
+  languages?: string[];
   generateStableHash?: (str: string) => string;
   ignoreFiles?: string[];
   // 新增：可配置需要忽略的日志对象（例如 ['Sentry']）
