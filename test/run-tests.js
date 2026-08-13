@@ -185,6 +185,32 @@ async function testScanCustomLanguages() {
   return 'testScanCustomLanguages passed';
 }
 
+async function testScanNoTranslateFunction() {
+  const dir = tempDir('i18n-scan-no-translate-');
+  const srcFile = path.join(dir, 'sample.js');
+  fs.writeFileSync(srcFile, "const greeting = '欢迎';\n", 'utf8');
+  const out = path.join(dir, 'result.xlsx');
+  const configPath = path.join(dir, 'cfg.js');
+  fs.writeFileSync(
+    configPath,
+    "module.exports = { languages: ['en', 'th'] };\n"
+  );
+  await scanCommand({ src: srcFile, out, config: configPath });
+  const wb = xlsx.readFile(out);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].zh, '欢迎');
+  assert.strictEqual(rows[0].en, '', '无 translate 时 en 列应为空');
+  assert.strictEqual(rows[0].th, '', '无 translate 时 th 列应为空');
+  const cols = Object.keys(rows[0]).sort();
+  assert.deepStrictEqual(
+    cols,
+    ['en', 'file', 'gitlab', 'key', 'line', 'th', 'zh'].sort()
+  );
+  return 'testScanNoTranslateFunction passed';
+}
+
 (async () => {
   const tests = [
     testNoConflict,
@@ -194,7 +220,8 @@ async function testScanCustomLanguages() {
     testTemplateLiteralMultiLineChinese,
     testTemplateLiteralCRLFNewline,
     testScanDefaultLanguages,
-    testScanCustomLanguages
+    testScanCustomLanguages,
+    testScanNoTranslateFunction
   ];
   for (const t of tests) {
     try {
