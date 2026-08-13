@@ -234,18 +234,21 @@ module.exports = {
     return 'custom_' + require('crypto').createHash('md5').update(text).digest('hex').substring(0, 8);
   },
   
-  // 忽略的文件/目录
-  ignoreFiles: [
-    'node_modules',
-    '__tests__',
-    '.storybook'
-  ],
-  
-  // 自动翻译函数（可选）
-  translate: (text) => {
-    // 集成自动翻译 API
-    return translateAPI(text);
-  }
+   // 忽略的文件/目录
+   ignoreFiles: [
+     'node_modules',
+     '__tests__',
+     '.storybook'
+   ],
+   
+   // 翻译目标语言列（默认 ['en','es','pt','th']，可按需增减；与 translate_cli.py --langs 配合使用）
+   languages: ['en', 'ja'],
+   
+   // 自动翻译函数（可选；接收目标语言作为第二参数）
+   translate: (text, lang) => {
+     // 集成自动翻译 API
+     return translateAPI(text, lang);
+   }
 };
 ```
 
