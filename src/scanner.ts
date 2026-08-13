@@ -17,6 +17,7 @@ interface ScanResult {
 }
 
 const DEFAULT_LANGUAGES = ['en', 'es', 'pt', 'th'];
+const RESERVED_LANG_KEYS = new Set(['gitlab', 'zh', 'file', 'line', 'key']);
 
 interface ScanOptions {
   translate?: (text: string, lang?: string) => Promise<string | undefined>;
@@ -465,7 +466,7 @@ export async function scanCommand(opts: any) {
       all.push(...extractStringsFromFile(file, configOptions, gitlab));
     });
     const languages: string[] = Array.isArray(configOptions.languages)
-      ? configOptions.languages.filter((l): l is string => typeof l === 'string' && l.length > 0)
+      ? configOptions.languages.filter((l): l is string => typeof l === 'string' && l.length > 0 && !RESERVED_LANG_KEYS.has(l))
       : DEFAULT_LANGUAGES;
 
     const wsData = await Promise.all(all.map(async (row) => {

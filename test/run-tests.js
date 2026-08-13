@@ -164,24 +164,27 @@ async function testScanCustomLanguages() {
       "  translate: async (text, lang) => { globalThis.__scanCustomCalls.push({ text, lang }); return lang === 'ja' ? text + '-ja' : text + '-en'; }\n" +
       "};\n"
   );
-  await scanCommand({ src: srcFile, out, config: configPath });
-  const wb = xlsx.readFile(out);
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
-  assert.strictEqual(rows.length, 2, '应扫描到两行');
-  const cols = Object.keys(rows[0]).sort();
-  assert.deepStrictEqual(
-    cols,
-    ['en', 'file', 'gitlab', 'ja', 'key', 'line', 'zh'].sort(),
-    '应仅包含 en/ja 两个翻译列'
-  );
-  const rowA = rows.find(r => r.zh === '早上好');
-  assert.ok(rowA, '缺少早上好行');
-  assert.strictEqual(rowA.en, '早上好-en');
-  assert.strictEqual(rowA.ja, '早上好-ja');
-  assert.strictEqual(globalThis.__scanCustomCalls.length, 4, '每行 × 每语言应共 4 次 translate 调用');
-  assert.ok(globalThis.__scanCustomCalls.every(c => c.lang === 'en' || c.lang === 'ja'), 'lang 应为 en/ja');
-  delete globalThis.__scanCustomCalls;
+  try {
+    await scanCommand({ src: srcFile, out, config: configPath });
+    const wb = xlsx.readFile(out);
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+    assert.strictEqual(rows.length, 2, '应扫描到两行');
+    const cols = Object.keys(rows[0]).sort();
+    assert.deepStrictEqual(
+      cols,
+      ['en', 'file', 'gitlab', 'ja', 'key', 'line', 'zh'].sort(),
+      '应仅包含 en/ja 两个翻译列'
+    );
+    const rowA = rows.find(r => r.zh === '早上好');
+    assert.ok(rowA, '缺少早上好行');
+    assert.strictEqual(rowA.en, '早上好-en');
+    assert.strictEqual(rowA.ja, '早上好-ja');
+    assert.strictEqual(globalThis.__scanCustomCalls.length, 4, '每行 × 每语言应共 4 次 translate 调用');
+    assert.ok(globalThis.__scanCustomCalls.every(c => c.lang === 'en' || c.lang === 'ja'), 'lang 应为 en/ja');
+  } finally {
+    delete globalThis.__scanCustomCalls;
+  }
   return 'testScanCustomLanguages passed';
 }
 
