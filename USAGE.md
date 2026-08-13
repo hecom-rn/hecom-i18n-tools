@@ -279,6 +279,105 @@ module.exports = {
 };
 ```
 
+### 按钮 label 自动识别（v2.0.4+）
+
+工具扫描时按 AST 上下文给每条中文字符串打 `category` 标记：
+- `button-label`：按钮 / Tab / 菜单项 / 字段名等极短文案
+- `normal`：其他 UI 文案
+
+#### 命中规则（按优先级）
+
+1. **JSX 属性白名单**：父链是 `JSXAttribute` 且属性名命中 `jsxAttributes`
+   ```jsx
+   <Button title="确认">...</Button>          // title 命中
+   <Tab tabLabel="首页" />                    // tabLabel 命中
+   <Header backTitle="返回" />                // backTitle 命中
+   ```
+
+2. **Alert.alert 数组 text 字段**：父链是 `alertCallees` 调用，字符串是其数组参数 `ObjectExpression` 的 `text` 属性
+   ```jsx
+   Alert.alert('提示', 'msg', [{ text: '确定' }])
+   ```
+
+3. **按钮组件祖先链**：JSXText 祖先链上存在 `buttonComponents` 白名单标签
+   ```jsx
+   <Button><Text>登录</Text></Button>           // 命中 Button
+   <TouchableOpacity><Text>点击登录</Text></TouchableOpacity>  // 命中 TouchableOpacity
+   ```
+
+4. **手动注释标记**：上一行注释包含 `inlineComment` 标记
+   ```tsx
+   // @i18n:button-label
+   const btnText = '一键清空';
+   ```
+
+#### 配置示例
+
+```javascript
+// i18nScannerOptions.js
+module.exports = {
+  // ... 其它配置
+  buttonLabelRules: {
+    jsxAttributes: [
+      'title', 'okText', 'cancelText', 'backTitle',
+      'actionTitle', 'buttonTitle', 'tabLabel', 'label',
+    ],
+    alertCallees: ['Alert', 'alert'],
+    buttonComponents: [
+      'Button', 'TouchableOpacity', 'Pressable',
+      'TouchableHighlight', 'BottomBtn',
+    ],
+    inlineComment: '// @i18n:button-label',
+    ancestorDepth: 4,
+  },
+};
+```
+
+未配置 `buttonLabelRules` 时所有条目归类为 `normal`。
+
+#### Prompt 模板配合
+
+Prompt 文件支持 `{category}` 占位符，AI 会按类别切换翻译风格：
+
+```text
+你是一位 SaaS 国际化专家。请将下面的中文翻译为 {target_lang}。
+
+【按 category 切换翻译风格】
+
+▌ 如果 category == "button-label"：
+  极简译文：英文 1~3 个 Title Case 单词（Cancel / Confirm / Save / Upload / Retry），
+  严禁加冠词、介词、句号、解释性后缀。
+  反例：中文"确认清理" → "Confirm"（不要 "Confirm Cleanup"）
+
+▌ 其他 category：
+  完整自然的 UI 文案。
+
+文案：{text}
+类别：{category}
+```
+
+旧 Prompt 文件不含 `{category}` 占位符时，工具自动回退到不带类别信息的格式——向后兼容。
+
+#### translate / flow 命令新增参数
+
+```
+--category-column <name>   category 元数据列名（默认: category；传空字符串禁用）
+```
+
+`translate_cli.py` 同时把 `category` 加入 `RESERVED_HEADERS`，避免被当成语言列误生成 `<lang>.json`。
+
+#### 已知边界
+
+| 场景 | 是否能识别 | 原因 |
+|---|---|---|
+| `<Button title="确认">` | ✅ | JSX 属性白名单 |
+| `<Alert.alert(..., [{text:'取消'}])>` | ✅ | Alert 数组 text 字段 |
+| `<Button><Text>{labels.x}</Text></Button>` | ❌ | 文字是变量字面量，扫描器看不到具体中文 |
+| `<TouchableOpacity><Text>登录</Text></TouchableOpacity>` | ✅ | 祖先链 buttonComponents 命中 |
+| 局部匿名 `function Button() {...}` | ❌ | 局部组件无法从调用方上下文识别 |
+
+边界场景可用第 4 条 `// @i18n:button-label` 注释手动兜底。
+
 ### 忽略特定文本
 
 #### 方法 1: 行级忽略
@@ -603,6 +702,13 @@ t('welcome_score', { Identifier1: userName, Identifier2: score })
 
 ## 📝 更新日志
 
+### v2.0.4
+- ✅ **新增**：按钮 label 自动分类（`buttonLabelRules` 配置 + `category` 列）
+- ✅ **新增**：`translate_cli.py` 支持 `{category}` Prompt 占位符
+- ✅ **新增**：translate / flow 命令 `--category-column` 参数
+- ✅ **修复**：i18nGenerator 不再将 category 误识别为语言列
+- ✅ 新增 6 个 button-label 单测
+
 ### v1.0.3
 - ✅ 支持 testID 自动忽略
 - ✅ 优化 JSXText 替换支持
@@ -621,5 +727,5 @@ t('welcome_score', { Identifier1: userName, Identifier2: score })
 
 ---
 
-**最后更新**: 2025年9月9日  
+**最后更新**: 2025年8月13日  
 **维护团队**: HECOM 前端团队

@@ -72,6 +72,7 @@ import { t } from '@/utils/i18n';
 ✅ **Excel管理**: 翻译文件用 Excel 管理，方便协作  
 ✅ **GitLab集成**: 生成源码链接，方便定位  
 ✅ **增量更新**: 支持版本迭代的增量翻译管理  
+✅ **按钮 label 分类**: 自动识别按钮 / Tab / 菜单项，AI 翻译时按极简规则生成 1~3 词译文  
 
 ## 📋 完整命令
 
@@ -98,13 +99,38 @@ const debug = "调试信息"; // i18n-ignore
 // i18n-ignore-file
 export const constants = { ... };
 ```
-
 ### 模板字符串支持
+
 ```javascript
 const msg = `欢迎 ${name}，积分 ${score}`;
 // 自动识别为: "欢迎 {{Identifier1}}，积分 {{Identifier2}}"
 // 使用: t('welcome_msg', { Identifier1: name, Identifier2: score })
 ```
+
+### 按钮 label 自动分类
+
+```javascript
+// i18nScannerOptions.js
+module.exports = {
+  buttonLabelRules: {
+    jsxAttributes: ['title', 'tabLabel', 'backTitle'],
+    alertCallees: ['Alert'],
+    buttonComponents: ['Button', 'TouchableOpacity', 'Pressable'],
+    inlineComment: '// @i18n:button-label',
+  },
+};
+```
+
+```jsx
+// 以下场景会自动识别为 button-label：
+<Button title="确认">...</Button>          // 命中 jsxAttributes
+<Alert.alert('', 'msg', [{ text: '确定' }]) />  // 命中 alertCallees
+<Button><Text>登录</Text></Button>         // 命中 buttonComponents
+// @i18n:button-label
+const btn = '一键清空'                      // 命中 inlineComment
+```
+
+Prompt 模板支持 `{category}` 占位符，AI 会按类别切换翻译风格——按钮 label 输出英文 1~3 词，普通文案输出完整自然译文。
 
 ## 📞 需要帮助？
 
