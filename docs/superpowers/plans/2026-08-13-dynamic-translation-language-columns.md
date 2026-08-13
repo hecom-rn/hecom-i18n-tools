@@ -273,12 +273,12 @@ async function testScanCustomLanguages() {
   fs.writeFileSync(srcFile, "const a = '早上好'; const b = '下午好';\n", 'utf8');
   const out = path.join(dir, 'result.xlsx');
   const configPath = path.join(dir, 'cfg.js');
-  const calls = [];
+  globalThis.__scanCustomCalls = [];
   fs.writeFileSync(
     configPath,
     "module.exports = {\n" +
       "  languages: ['en', 'ja'],\n" +
-      "  translate: async (text, lang) => { calls.push({ text, lang }); return lang === 'ja' ? text + '-ja' : text + '-en'; }\n" +
+      "  translate: async (text, lang) => { globalThis.__scanCustomCalls.push({ text, lang }); return lang === 'ja' ? text + '-ja' : text + '-en'; }\n" +
       "};\n"
   );
   await scanCommand({ src: srcFile, out, config: configPath });
@@ -296,8 +296,9 @@ async function testScanCustomLanguages() {
   assert.ok(rowA, '缺少早上好行');
   assert.strictEqual(rowA.en, '早上好-en');
   assert.strictEqual(rowA.ja, '早上好-ja');
-  assert.strictEqual(calls.length, 4, '每行 × 每语言应共 4 次 translate 调用');
-  assert.ok(calls.every(c => c.lang === 'en' || c.lang === 'ja'), 'lang 应为 en/ja');
+  assert.strictEqual(globalThis.__scanCustomCalls.length, 4, '每行 × 每语言应共 4 次 translate 调用');
+  assert.ok(globalThis.__scanCustomCalls.every(c => c.lang === 'en' || c.lang === 'ja'), 'lang 应为 en/ja');
+  delete globalThis.__scanCustomCalls;
   return 'testScanCustomLanguages passed';
 }
 ```
