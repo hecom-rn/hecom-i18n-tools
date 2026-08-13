@@ -310,6 +310,11 @@ export async function genCommand(opts: any) {
     } else {
       console.warn('[i18n-gen] 未找到 email 配置，跳过邮件发送。请在配置文件中添加 email 字段。');
     }
+
+    throw new Error(
+      `[i18n-gen] 检测到翻译冲突 (${summary})，已保留原有 JSON 中的旧翻译，未覆盖。` +
+      `请查看冲突报告 ${reportPath} 处理后重试。`
+    );
   }
 
   // 写入语言包文件（原有值优先，新 key 追加到末尾）

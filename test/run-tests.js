@@ -53,7 +53,7 @@ async function testConflictAbort() {
   });
   let threw = false;
   try {
-    genCommand({ excel, out: outDir });
+    await genCommand({ excel, out: outDir });
   } catch (e) {
     threw = true;
     // 确认没有被覆盖
