@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const xlsx = require('xlsx');
 const { genCommand } = require('../dist/i18nGenerator');
-const { extractStringsFromFile } = require('../dist/scanner');
+const { extractStringsFromFile, scanCommand } = require('../dist/scanner');
 
 let passed = 0;
 let failed = 0;
@@ -130,6 +130,26 @@ async function testTemplateLiteralCRLFNewline() {
   return 'testTemplateLiteralCRLFNewline passed';
 }
 
+async function testScanDefaultLanguages() {
+  const dir = tempDir('i18n-scan-default-');
+  const srcFile = path.join(dir, 'sample.js');
+  fs.writeFileSync(srcFile, "const msg = '你好世界';\n", 'utf8');
+  const out = path.join(dir, 'result.xlsx');
+  await scanCommand({ src: srcFile, out });
+  const wb = xlsx.readFile(out);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+  assert.strictEqual(rows.length, 1, '应扫描到一行');
+  const cols = Object.keys(rows[0]).sort();
+  assert.deepStrictEqual(
+    cols,
+    ['en', 'es', 'file', 'gitlab', 'key', 'line', 'pt', 'th', 'zh'].sort(),
+    '默认列应为 zh/en/es/pt/th + file/line/key/gitlab'
+  );
+  assert.strictEqual(rows[0].zh, '你好世界');
+  return 'testScanDefaultLanguages passed';
+}
+
 (async () => {
   const tests = [
     testNoConflict,
@@ -137,7 +157,8 @@ async function testTemplateLiteralCRLFNewline() {
     testTemplateLiteralNewline,
     testTemplateLiteralMultipleExpressions,
     testTemplateLiteralMultiLineChinese,
-    testTemplateLiteralCRLFNewline
+    testTemplateLiteralCRLFNewline,
+    testScanDefaultLanguages
   ];
   for (const t of tests) {
     try {

@@ -16,6 +16,8 @@ interface ScanResult {
   gitlab: string;
 }
 
+const DEFAULT_LANGUAGES = ['en', 'es', 'pt', 'th'];
+
 interface ScanOptions {
   translate?: (text: string, lang?: string) => Promise<string | undefined>;
   languages?: string[];
@@ -462,16 +464,25 @@ export async function scanCommand(opts: any) {
     walkDir(srcPath, configOptions, (file) => {
       all.push(...extractStringsFromFile(file, configOptions, gitlab));
     });
+    const languages: string[] = Array.isArray(configOptions.languages)
+      ? configOptions.languages.filter((l): l is string => typeof l === 'string' && l.length > 0)
+      : DEFAULT_LANGUAGES;
+
     const wsData = await Promise.all(all.map(async (row) => {
       const { key, value, file, line, gitlab } = row;
       const link = gitlab ? (gitlab.includes('#L') ? gitlab : gitlab + '#L' + line) : '';
+      const translated: Record<string, string | undefined> = {};
+      if (configOptions.translate) {
+        await Promise.all(languages.map(async (lang) => {
+          translated[lang] = await configOptions.translate!(value, lang);
+        }));
+      } else {
+        for (const lang of languages) translated[lang] = undefined;
+      }
       return {
         gitlab: link ? { t: 's', l: { Target: link }, v: '链接' } : '',
         zh: value,
-        en: configOptions.translate ? await configOptions.translate(value) : undefined,
-        es: undefined,
-        pt: undefined,
-        th: undefined,
+        ...translated,
         file,
         line,
         key,
