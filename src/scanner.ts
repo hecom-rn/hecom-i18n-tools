@@ -7,6 +7,48 @@ import { generateGitlabUrl } from './gitlab';
 import crypto from 'crypto';
 import scanOptions, { ButtonLabelRules } from './scannerOptions';
 
+/**
+ * 从 master.xlsx 读取所有 (key -> zh) 映射。
+ * 用于 legacy 扫描：根据 t('key') 中的 key 反查中文文本。
+ */
+export function loadMasterKeyZhMap(masterPath: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  if (!fs.existsSync(masterPath)) return map;
+  try {
+    const wb = xlsx.readFile(masterPath);
+    wb.SheetNames.forEach((sheetName) => {
+      const ws = wb.Sheets[sheetName];
+      const rows = xlsx.utils.sheet_to_json<any>(ws, { defval: '' });
+      rows.forEach((row) => {
+        if (row.key && row.zh != null && String(row.zh).trim() !== '') {
+          map[String(row.key)] = String(row.zh);
+        }
+      });
+    });
+  } catch (e) {
+    console.warn(`[i18n-tools] 读取 master.xlsx 失败: ${e}`);
+  }
+  return map;
+}
+
+/**
+ * 从 locales 目录读取所有语言的 (key -> value) 映射，返回 { lang: {key:value} }。
+ * 用于在 scan 完成后预填非 button-label 条目的译文，让 AI 只翻译 button-label。
+ */
+export function loadLocaleTranslations(outDir: string, langs: string[]): Record<string, Record<string, string>> {
+  const result: Record<string, Record<string, string>> = {};
+  for (const lang of langs) {
+    const p = path.isAbsolute(outDir) ? path.join(outDir, `${lang}.json`) : path.join(process.cwd(), outDir, `${lang}.json`);
+    if (!fs.existsSync(p)) continue;
+    try {
+      result[lang] = JSON.parse(fs.readFileSync(p, 'utf8'));
+    } catch {
+      // ignore parse error
+    }
+  }
+  return result;
+}
+
 
 interface ScanResult {
   key: string;
@@ -239,9 +281,27 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
     //   3) 当前节点是 JSXText 且直接父元素标签命中 buttonComponents 白名单
     //   4) 上一行注释包含 inlineComment 标记
     const buttonRules: ButtonLabelRules | undefined = options.buttonLabelRules;
+    // 长度护栏：超过 6 个字符的中文/混合文本强制判为 normal（避免长句被压成单词）
+    // 仅对中文字符计数；纯 ASCII 短文本（如 'OK'）不受此护栏约束
+    const BUTTON_LABEL_MAX_LEN = 6;
+    function isOverLongButtonCandidate(text: string): boolean {
+      const trimmed = (text || '').trim();
+      if (!trimmed) return false;
+      // 仅当含中文字符且 trim 后字符数 > 6 时才算超长
+      if (/[\u4e00-\u9fa5]/.test(trimmed) && trimmed.length > BUTTON_LABEL_MAX_LEN) {
+        return true;
+      }
+      return false;
+    }
     function detectButtonLabel(path: NodePath<any>, nodeType: 'StringLiteral' | 'JSXText' | 'TemplateLiteral'): boolean {
       if (!buttonRules) return false;
       const maxDepth = buttonRules.ancestorDepth ?? 4;
+
+      // 长度护栏：超长候选直接判定为 normal（与上下文无关）
+      const candidateText = nodeType === 'JSXText'
+        ? (path.node as any).value
+        : (path.node as any).value;
+      if (isOverLongButtonCandidate(candidateText)) return false;
 
       // 规则 1 + 2: 仅 StringLiteral 适用（JSXText 的父级直接是 JSXElement，不可能命中规则 1）
       if (nodeType === 'StringLiteral') {
@@ -310,6 +370,88 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       const startLine = (path.node as any).loc?.start.line;
       if (startLine && startLine > 1) {
         const prevLine = codeLines[startLine - 2] || '';
+        if (prevLine.includes(buttonRules.inlineComment ?? '// @i18n:button-label')) return true;
+      }
+
+      return false;
+    }
+
+    // 为 t('key') 调用点识别按钮 label 上下文：
+    //   规则 1: 父链是 JSXAttribute 且 name 命中 jsxAttributes 白名单
+    //           <Button title={t('key')}>
+    //   规则 2: 父链中存在 Alert.alert 的 arguments，且本调用是 ObjectExpression.text 字段的值
+    //           Alert.alert('', '', [{ text: t('key') }])
+    //   规则 3: 父链上某个 JSXElement 的 tagName 在 buttonComponents 白名单内
+    //           <Button><Text>{t('key')}</Text></Button>
+    //   规则 4: 上一行注释命中 inlineComment 标记
+    function detectButtonLabelForTCall(callPath: NodePath<any>): boolean {
+      if (!buttonRules) return false;
+      const maxDepth = buttonRules.ancestorDepth ?? 4;
+
+      // 规则 1：<Button title={t('key')}>
+      // path -> JSXExpressionContainer -> JSXAttribute(name) -> ...
+      let p: NodePath<any> | null = callPath.parentPath;
+      let depth = 0;
+      while (p && depth < maxDepth) {
+        if (p.isJSXAttribute()) {
+          const attrName = (p.node as any).name?.name;
+          if (attrName && buttonRules.jsxAttributes?.includes(attrName)) return true;
+          return false;
+        }
+        if (p.isJSXElement()) break;
+        p = p.parentPath;
+        depth++;
+      }
+
+      // 规则 2：Alert.alert(..., { text: t('key') })
+      // 找到祖先中第一个 CallExpression，匹配 alertCallees；
+      // 同时确认本调用正好是某个 ObjectExpression.text 字段的值
+      let c: NodePath<any> | null = callPath.parentPath;
+      depth = 0;
+      while (c && depth < maxDepth) {
+        if (c.isCallExpression()) {
+          const callee: any = c.node.callee;
+          const name = callee?.type === 'Identifier' ? callee.name
+                     : callee?.type === 'MemberExpression' ? callee.property?.name
+                     : null;
+          if (name && buttonRules.alertCallees?.includes(name)) {
+            const args: any[] = c.node.arguments || [];
+            for (const arg of args) {
+              if (!arg) continue;
+              const candidates = arg.type === 'ArrayExpression' ? (arg.elements || []) : [arg];
+              for (const item of candidates) {
+                if (!item || item.type !== 'ObjectExpression') continue;
+                if (!Array.isArray(item.properties)) continue;
+                for (const prop of item.properties) {
+                  if (prop?.type !== 'ObjectProperty') continue;
+                  const k = prop.key?.name ?? prop.key?.value;
+                  if (k === 'text' && prop.value === callPath.node) return true;
+                }
+              }
+            }
+            return false;
+          }
+          return false;
+        }
+        c = c.parentPath;
+        depth++;
+      }
+
+      // 规则 3：<Button><Text>{t('key')}</Text></Button>
+      let t: NodePath<any> | null = callPath.parentPath;
+      while (t) {
+        if (t.isJSXElement()) {
+          const opening: any = (t.node as any).openingElement;
+          const tagName = opening?.name?.name;
+          if (tagName && buttonRules.buttonComponents?.includes(tagName)) return true;
+        }
+        t = t.parentPath;
+      }
+
+      // 规则 4：行级注释标记（复用同一套规则）
+      const callLine = (callPath.node as any).loc?.start.line;
+      if (callLine && callLine > 1) {
+        const prevLine = codeLines[callLine - 2] || '';
         if (prevLine.includes(buttonRules.inlineComment ?? '// @i18n:button-label')) return true;
       }
 
@@ -492,6 +634,179 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
   return results;
 }
 
+/**
+ * Legacy 扫描：从源码中提取 t('key') 调用点，结合 master.xlsx 反查中文，
+ * 按 buttonLabelRules 判断调用点上下文是否属于按钮 label。
+ *
+ * 设计目的：让历史已 wrap 的条目（master.xlsx 中已有的 key）也能被分类、
+ * 重新翻译并由 gen 按 category 覆盖回写到语言包。
+ */
+function extractTCallsFromFile(
+  filePath: string,
+  masterKeyZhMap: Record<string, string>,
+  options: ScanOptions = scanOptions,
+  gitlabPrefix?: string
+): ScanResult[] {
+  const buttonRules: ButtonLabelRules | undefined = options.buttonLabelRules;
+  if (!buttonRules) return [];
+  if (Object.keys(masterKeyZhMap).length === 0) return [];
+
+  const code = fs.readFileSync(filePath, 'utf8');
+  const codeLines = code.split(/\r?\n/);
+  const results: ScanResult[] = [];
+  const projectRoot = process.cwd();
+  let relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/');
+
+  if (code.includes('i18n-ignore-file')) return results;
+
+  const isTypeScript =
+    /\.(ts|tsx)$/.test(filePath) || code.includes('import type') || code.includes('export type');
+  let ast: any;
+  try {
+    ast = babelParser.parse(code, {
+      sourceType: 'unambiguous',
+      allowImportExportEverywhere: true,
+      allowReturnOutsideFunction: true,
+      plugins: isTypeScript
+        ? ['typescript', 'jsx', 'classProperties', 'decorators-legacy']
+        : ['jsx', 'classProperties'],
+      errorRecovery: true,
+    });
+  } catch (e: any) {
+    return results;
+  }
+
+  // 已处理过的 key（同一文件多次出现只取第一次位置）
+  const seen = new Set<string>();
+
+  traverse(ast as any, {
+    CallExpression(callPath: NodePath<any>) {
+      const node = callPath.node;
+      const callee: any = node.callee;
+      // 仅匹配 Identifier 名为 t（裸 t('key')）。i18n.t(...) / translation.t(...) 不命中
+      if (!callee || callee.type !== 'Identifier' || callee.name !== 't') return;
+      const args: any[] = node.arguments || [];
+      if (!args.length) return;
+      const keyArg = args[0];
+      if (!keyArg || keyArg.type !== 'StringLiteral') return;
+      const key = keyArg.value;
+      if (!key || seen.has(key)) return;
+      // 必须存在于 master.xlsx
+      const zhValue = masterKeyZhMap[key];
+      if (!zhValue) return;
+      seen.add(key);
+
+      const line = keyArg.loc?.start.line || node.loc?.start.line || 0;
+      const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
+
+      // 复用针对 StringLiteral 的判定：把 keyArg 当作 StringLiteral 路径传入即可
+      // 注意：detectButtonLabel 内部会沿父链找 JSXAttribute / Alert.alert / buttonComponents
+      //       对于 t('key')，父链中能直接看到 JSXAttribute、Alert.alert 调用，与 StringLiteral 一致
+      const fakeStringPath = {
+        node: keyArg,
+        parentPath: callPath.parentPath,
+        isJSXAttribute: () => false,
+      } as unknown as NodePath<any>;
+      // 上面的伪路径不够稳健，因此改用针对 CallExpression 的专用判定
+      const isButton = isTCallInButtonContext(callPath, codeLines, buttonRules, zhValue);
+      const category: 'button-label' | 'normal' = isButton ? 'button-label' : 'normal';
+
+      results.push({ key, value: zhValue, file: relPath, line, gitlab, category });
+    },
+  });
+
+  return results;
+}
+
+/**
+ * t('key') 调用的按钮 label 上下文识别。
+ * 与 detectButtonLabel 类似，但起点是 CallExpression 本身（或其 keyArg），父链结构不同。
+ *
+ * @param zhValue 该 key 对应的中文文本（从 master.xlsx 反查得到），用于长度护栏判断
+ */
+function isTCallInButtonContext(
+  callPath: NodePath<any>,
+  codeLines: string[],
+  buttonRules: ButtonLabelRules,
+  zhValue?: string
+): boolean {
+  const maxDepth = buttonRules.ancestorDepth ?? 4;
+
+  // 长度护栏：超长中文候选直接判定为 normal（与上下文无关）
+  if (zhValue && /[\u4e00-\u9fa5]/.test(zhValue) && zhValue.trim().length > 6) {
+    return false;
+  }
+
+  // 规则 1：<Button title={t('key')}> —— 父链经过 JSXExpressionContainer -> JSXAttribute
+  let p: NodePath<any> | null = callPath.parentPath;
+  let depth = 0;
+  while (p && depth < maxDepth) {
+    if (p.isJSXAttribute()) {
+      const attrName = (p.node as any).name?.name;
+      if (attrName && buttonRules.jsxAttributes?.includes(attrName)) return true;
+      return false;
+    }
+    if (p.isJSXElement()) break;
+    p = p.parentPath;
+    depth++;
+  }
+
+  // 规则 2：Alert.alert('', '', [{ text: t('key') }])
+  let c: NodePath<any> | null = callPath.parentPath;
+  depth = 0;
+  while (c && depth < maxDepth) {
+    if (c.isCallExpression()) {
+      const callee: any = c.node.callee;
+      const name =
+        callee?.type === 'Identifier'
+          ? callee.name
+          : callee?.type === 'MemberExpression'
+          ? callee.property?.name
+          : null;
+      if (name && buttonRules.alertCallees?.includes(name)) {
+        const args: any[] = c.node.arguments || [];
+        for (const arg of args) {
+          if (!arg) continue;
+          const candidates = arg.type === 'ArrayExpression' ? arg.elements || [] : [arg];
+          for (const item of candidates) {
+            if (!item || item.type !== 'ObjectExpression') continue;
+            if (!Array.isArray(item.properties)) continue;
+            for (const prop of item.properties) {
+              if (prop?.type !== 'ObjectProperty') continue;
+              const k = prop.key?.name ?? prop.key?.value;
+              if (k === 'text' && prop.value === callPath.node) return true;
+            }
+          }
+        }
+        return false;
+      }
+      return false;
+    }
+    c = c.parentPath;
+    depth++;
+  }
+
+  // 规则 3：<Button><Text>{t('key')}</Text></Button>
+  let t: NodePath<any> | null = callPath.parentPath;
+  while (t) {
+    if (t.isJSXElement()) {
+      const opening: any = (t.node as any).openingElement;
+      const tagName = opening?.name?.name;
+      if (tagName && buttonRules.buttonComponents?.includes(tagName)) return true;
+    }
+    t = t.parentPath;
+  }
+
+  // 规则 4：行级注释标记
+  const callLine = (callPath.node as any).loc?.start.line;
+  if (callLine && callLine > 1) {
+    const prevLine = codeLines[callLine - 2] || '';
+    if (prevLine.includes(buttonRules.inlineComment ?? '// @i18n:button-label')) return true;
+  }
+
+  return false;
+}
+
 function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => void) {
   const { ignoreFiles = [] } = options;
   // 如果dir是相对路径，则以当前工作目录为基准
@@ -527,8 +842,8 @@ function walkDir(dir: string, options: ScanOptions = {}, cb: (file: string) => v
 }
 
 export async function scanCommand(opts: any) {
-  let { src, out, gitlab, config } = opts;
-  
+  let { src, out, gitlab, config, master, localesDir, localeLangs } = opts;
+
   // 从配置文件加载配置
   let configOptions: ScanOptions = {};
   if (config) {
@@ -541,29 +856,61 @@ export async function scanCommand(opts: any) {
       console.error(`[i18n-tools] 加载配置文件失败: ${err}`);
     }
   }
-  
+
+  // 加载 master.xlsx，用于 legacy 扫描时反查 t('key') 的中文文本
+  let masterKeyZhMap: Record<string, string> = {};
+  if (master) {
+    const masterPath = path.isAbsolute(master) ? master : path.join(process.cwd(), master);
+    masterKeyZhMap = loadMasterKeyZhMap(masterPath);
+    console.log(`[i18n-tools] 已加载 master: ${masterPath}（${Object.keys(masterKeyZhMap).length} 个 key）`);
+  }
+
+  // 加载现有语言包，用于预填 non-button-label 条目的译文（让 AI 只翻译 button-label）
+  let localeTranslations: Record<string, Record<string, string>> = {};
+  if (localesDir) {
+    const langs: string[] = Array.isArray(localeLangs) && localeLangs.length
+      ? localeLangs
+      : ['en', 'es', 'pt', 'th', 'fr', 'ru'];
+    localeTranslations = loadLocaleTranslations(localesDir, langs);
+    const loadedLangs = Object.keys(localeTranslations);
+    if (loadedLangs.length) {
+      console.log(`[i18n-tools] 已加载现有语言包: ${loadedLangs.join(', ')}（预填非 button-label 条目）`);
+    }
+  }
+
   // 支持 src 为字符串或数组
   if (!Array.isArray(src)) src = [src];
   const wb = xlsx.utils.book_new();
-  
+
   for (const srcPath of src) {
     const all: ScanResult[] = [];
     walkDir(srcPath, configOptions, (file) => {
       all.push(...extractStringsFromFile(file, configOptions, gitlab));
+      // legacy 扫描：补充 t('key') 调用点（仅当 master.xlsx 提供时启用）
+      if (master) {
+        all.push(...extractTCallsFromFile(file, masterKeyZhMap, configOptions, gitlab));
+      }
     });
     const wsData = await Promise.all(all.map(async (row) => {
       const { key, value, file, line, gitlab, category } = row;
       const link = gitlab ? (gitlab.includes('#L') ? gitlab : gitlab + '#L' + line) : '';
+      const cat = category ?? 'normal';
+      // 仅当 category !== 'button-label' 时预填现有译文；button-label 留空让 AI 重新润色
+      const prefill = (lang: string): string | undefined => {
+        if (cat === 'button-label') return undefined;
+        const m = localeTranslations[lang];
+        return m && m[key] ? m[key] : undefined;
+      };
       return {
         gitlab: link ? { t: 's', l: { Target: link }, v: '链接' } : '',
         zh: value,
-        category: category ?? 'normal',
-        en: configOptions.translate ? await configOptions.translate(value) : undefined,
-        es: undefined,
-        pt: undefined,
-        th: undefined,
-        fr: undefined,
-        ru: undefined,
+        category: cat,
+        en: prefill('en') ?? (configOptions.translate ? await configOptions.translate(value) : undefined),
+        es: prefill('es'),
+        pt: prefill('pt'),
+        th: prefill('th'),
+        fr: prefill('fr'),
+        ru: prefill('ru'),
         file,
         line,
         key,
@@ -580,4 +927,4 @@ export async function scanCommand(opts: any) {
 }
 
 // 导出 extractStringsFromFile 函数以便测试
-export { extractStringsFromFile };
+export { extractStringsFromFile, extractTCallsFromFile };

@@ -62,10 +62,16 @@ program
   .requiredOption('-o, --out <out>', '输出Excel路径')
   .option('-g, --gitlab <gitlab>', 'GitLab仓库URL前缀')
   .option('-c, --config <config>', '配置文件路径')
+  .option('-m, --master <master>', '主Excel文件路径（可选）。传入后将额外扫描源码中的 t(\'key\') 调用点并按 buttonLabelRules 分类，用于 gen 阶段按 category 覆盖历史按钮 label 翻译。')
+  .option('--locales-dir <localesDir>', '现有语言包目录（可选）。与 --master 配合使用：预填 non-button-label 条目的现有译文，让后续 translate 步骤只翻译 button-label。')
+  .option('--locale-langs <localeLangs>', '要预填的语言列表，逗号分隔，如 en,es,pt,th,fr,ru')
   .action(async (opts) => {
     // 支持 --src=../../a,../../b 逗号分隔
     if (typeof opts.src === 'string' && opts.src.includes(',')) {
       opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+    if (opts.localeLangs && typeof opts.localeLangs === 'string') {
+      opts.localeLangs = opts.localeLangs.split(',').map((s: string) => s.trim());
     }
     await scanCommand(opts);
   });
@@ -146,6 +152,11 @@ program
       out:    opts.excel,
       gitlab: opts.gitlab,
       config: opts.config,
+      // 传入 master 后，scan 会同时提取源码中的 t('key') 调用点（legacy 扫描）
+      master: opts.master,
+      // 预填 non-button-label 条目的现有译文，让 AI 只翻译 button-label
+      localesDir:   opts.out,
+      localeLangs:  opts.langs ? opts.langs.split(',').map((s: string) => s.trim()) : undefined,
     });
 
     console.log('\n========== [2/4] 替换代码为 i18n 调用 ==========');

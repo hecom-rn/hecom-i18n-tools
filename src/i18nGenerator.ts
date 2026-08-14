@@ -63,8 +63,16 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
     }
 
     const masterRows: any[] = xlsx.utils.sheet_to_json(masterWs, { defval: '' });
-    // 不去重：直接按顺序追加 srcRows 到 masterRows，并按 file 名 + line 排序
-    const rows = masterRows.concat(srcRows).sort(rowComparator);
+    // 按 key 去重：相同 key 时以 srcRows 为准（覆盖旧行），保留无 key 的行
+    const byKey = new Map<string, any>();
+    for (const r of masterRows) {
+      if (r.key) byKey.set(String(r.key), r);
+    }
+    for (const r of srcRows) {
+      if (r.key) byKey.set(String(r.key), r);
+    }
+    const noKeyRows = masterRows.concat(srcRows).filter((r) => !r.key);
+    const rows = [...byKey.values(), ...noKeyRows].sort(rowComparator);
     // 保留并扩展表头：使用两侧的列并将 key 放到最前（若存在）
     const headerSet = new Set<string>();
     [...masterRows, ...srcRows].forEach((r) => Object.keys(r).forEach((col) => headerSet.add(col)));
@@ -242,14 +250,20 @@ export async function genCommand(opts: any) {
   const wb = xlsx.readFile(excel);
   const langMap: Record<string, Record<string, string>> = {};
   const conflicts: ConflictMap = {};
-  
-  // 遍历所有工作表，构建 langMap
+  // 记录每个 key 的 category（来自 Excel 的 category 列），用于 gen 阶段决定是否覆盖现有翻译
+  const keyCategoryMap: Record<string, string> = {};
+
+  // 遍历所有工作表，构建 langMap 和 keyCategoryMap
   const GEN_RESERVED_HEADERS = new Set(['key', 'file', 'line', 'gitlab', 'value', 'category']);
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(ws);
     rows.forEach((row: any) => {
       if (!row.key) return;
+      // 收集 category（同一 key 多处出现时以最后一次为准）
+      if (row.category) {
+        keyCategoryMap[row.key] = row.category;
+      }
       Object.keys(row).forEach((k) => {
         if (!GEN_RESERVED_HEADERS.has(k)) {
           if (!langMap[k]) langMap[k] = {};
@@ -259,7 +273,7 @@ export async function genCommand(opts: any) {
     });
   });
 
-  // 检测冲突（非阻塞，仅用于生成报告和发送邮件）
+  // 检测冲突（仅对非 button-label 条目报警；button-label 是预期覆盖，不算冲突）
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
     if (!fs.existsSync(outputPath)) return;
@@ -268,6 +282,8 @@ export async function genCommand(opts: any) {
         fs.readFileSync(outputPath, 'utf8')
       );
       Object.keys(langMap[lang]).forEach((k) => {
+        // button-label 类条目预期会被新译文覆盖，跳过冲突检测（避免误报）
+        if (keyCategoryMap[k] === 'button-label') return;
         if (Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
           const oldVal = existingLangMap[k];
           const newVal = langMap[lang][k];
@@ -313,8 +329,12 @@ export async function genCommand(opts: any) {
     }
   }
 
-  // 写入语言包文件（原有值优先，新 key 追加到末尾）
+  // 写入语言包文件
+  //   - 新 key：直接追加
+  //   - 已有 key + category='button-label'：用新译文覆盖（AI 按 prompt-i18n.txt 重新润色）
+  //   - 已有 key + 其它 category：保留原值（避免误改 normal 文案）
   fs.mkdirSync(out, { recursive: true });
+  let overriddenCount = 0;
   Object.keys(langMap).forEach((lang) => {
     const outputPath = path.join(out, `${lang}.json`);
     let finalMap: Record<string, string> = { ...langMap[lang] };
@@ -323,12 +343,20 @@ export async function genCommand(opts: any) {
         const existingLangMap: Record<string, string> = JSON.parse(
           fs.readFileSync(outputPath, 'utf8')
         );
-        // 以原有 JSON 为基础（保留原有值及其顺序），仅将 langMap 中的新 key 追加到末尾
+        // 以原有 JSON 为基础（保留原有值及其顺序）
         finalMap = { ...existingLangMap };
         Object.keys(langMap[lang]).forEach((k) => {
+          const newVal = langMap[lang][k];
+          const hasNewTranslation = newVal != null && String(newVal).trim() !== '';
           if (!Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
-            finalMap[k] = langMap[lang][k];
+            // 新 key：直接追加
+            finalMap[k] = newVal;
+          } else if (keyCategoryMap[k] === 'button-label' && hasNewTranslation) {
+            // button-label 类条目：用新译文覆盖（润色）
+            if (finalMap[k] !== newVal) overriddenCount++;
+            finalMap[k] = newVal;
           }
+          // 其它情况（normal 类 + 已有 key）：保留现有值，不写入
         });
       } catch (e) {
         console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);
@@ -337,6 +365,9 @@ export async function genCommand(opts: any) {
     fs.writeFileSync(outputPath, JSON.stringify(finalMap, null, 2), 'utf8');
     console.log(`生成: ${lang}.json`);
   });
+  if (overriddenCount > 0) {
+    console.log(`[i18n-gen] 已按 category='button-label' 覆盖 ${overriddenCount} 条历史翻译`);
+  }
 
   console.log('语言包生成完成');
 
