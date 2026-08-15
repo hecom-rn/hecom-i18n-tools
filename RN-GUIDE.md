@@ -122,8 +122,29 @@ project/
 module.exports = {
   ignoreFiles: ['.expo', 'android', 'ios', '__tests__'],
   generateStableHash: (str) => 'rn_' + require('crypto').createHash('md5').update(str).digest('hex').substring(0, 12),
+  // 按钮 label 识别规则（可选）
+  buttonLabelRules: {
+    jsxAttributes: ['title', 'okText', 'cancelText', 'backTitle', 'tabLabel'],
+    alertCallees: ['Alert', 'alert'],
+    buttonComponents: ['Button', 'TouchableOpacity', 'Pressable', 'TouchableHighlight'],
+    inlineComment: '// @i18n:button-label',
+    ancestorDepth: 4,
+  },
 };
 ```
+
+### 按钮 label 手动标记
+
+工具会自动识别 JSX 属性、Alert 按钮、按钮包 Text 等场景的"按钮 label"文案，并打 `category='button-label'` 标记。
+
+对 AST 无法识别的场景（如变量字面量传入 children），可用注释手动标记：
+
+```tsx
+// @i18n:button-label
+const btnText = '一键清空';
+```
+
+AI 翻译时会按 Prompt 模板里的 `{category}` 占位符切换翻译风格——按钮 label 输出 1~3 词极简译文，普通文案输出完整自然译文。
 
 ## 🎯 最佳实践
 
