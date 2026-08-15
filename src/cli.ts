@@ -187,7 +187,26 @@ program
       console.log('\n[3/4] 未提供 --api-key，跳过翻译步骤。');
     }
 
-    console.log('\n========== [4/4] 生成语言包 ==========');
+    // 翻译完成后立即校验 version.xlsx：在 gen 写入 locales 前拦截脏数据。
+    // 同时校验 master.xlsx（如提供）：避免历史脏数据被 gen 覆写进 locales。
+    // 校验失败直接中止流程，locales / master.xlsx 都不会被污染。
+    console.log('\n========== [4/5] 校验翻译质量 ==========');
+    const versionIssues = validateTranslations(opts.excel);
+    if (versionIssues.length > 0) {
+      printValidationIssues(versionIssues);
+      console.error('\n❌ 翻译校验未通过，已中止流程。请修复后重试。');
+      process.exit(1);
+    }
+    if (opts.master && opts.master !== opts.excel) {
+      const masterIssues = validateTranslations(opts.master);
+      if (masterIssues.length > 0) {
+        printValidationIssues(masterIssues);
+        console.error('\n❌ master.xlsx 校验未通过，已中止流程。请修复 master.xlsx 后重试。');
+        process.exit(1);
+      }
+    }
+
+    console.log('\n========== [5/5] 生成语言包 ==========');
     await genCommand({
       excel:          opts.excel,
       out:            opts.out,
@@ -195,18 +214,6 @@ program
       conflictReport: opts.conflictReport,
       config:         opts.config,
     });
-
-    // 仅在传入 master.xlsx 时跑校验：校验 master 中的翻译质量，
-    // 防止 LLM 输出的脏数据（语言混淆 / prompt 回显 / button-label 超长）落盘到 locales。
-    if (opts.master) {
-      console.log('\n========== [5/5] 校验翻译质量 ==========');
-      const issues = validateTranslations(opts.master);
-      if (issues.length > 0) {
-        printValidationIssues(issues);
-        console.error('\n❌ 翻译校验未通过，已中止流程。请修复 master.xlsx 后重试。');
-        process.exit(1);
-      }
-    }
 
     console.log('\n✅ 一键流程完成！');
   });
