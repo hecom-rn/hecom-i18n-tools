@@ -242,15 +242,16 @@ export async function genCommand(opts: any) {
   const wb = xlsx.readFile(excel);
   const langMap: Record<string, Record<string, string>> = {};
   const conflicts: ConflictMap = {};
-  
+
   // 遍历所有工作表，构建 langMap
+  const GEN_RESERVED_HEADERS = new Set(['key', 'file', 'line', 'gitlab', 'value', 'category']);
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(ws);
     rows.forEach((row: any) => {
       if (!row.key) return;
       Object.keys(row).forEach((k) => {
-        if (k !== 'key' && k !== 'file' && k !== 'line' && k !== 'gitlab' && k !== 'value') {
+        if (!GEN_RESERVED_HEADERS.has(k)) {
           if (!langMap[k]) langMap[k] = {};
           langMap[k][row.key] = row[k];
         }
