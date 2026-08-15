@@ -98,10 +98,9 @@ function isOverLongButtonCandidate(text: string): boolean {
  * 检查规则（按优先级）：
  *   1. 节点范围内任意行含 i18n-ignore 注释
  *   2. 节点直接前一行含 i18n-ignore 注释（典型行尾注释场景）
- *   3. 节点前若干行内含独立成行的 i18n-ignore 注释（trim 后以 // 开头），
- *      且中间无空行、其它正常代码行（典型"const 声明块之前单写一行注释"场景）
+ *   3. 块级作用域：节点前若干行内含独立成行的 i18n-ignore 注释（trim 后以 // 开头），
+ *      且中间没有空行（空行 = 块边界）
  *
- * 仅独立成行的 ignore 注释（行尾注释除外）才会扩展作用域，避免误判。
  * 提供给 extractTCallsFromFile（legacy 扫描）调用，因为后者不在 extractStringsFromFile 闭包内。
  */
 function shouldIgnoreNodeByLine(codeLines: string[], ignoreLines: number[], nodeStartLine: number, nodeEndLine: number): boolean {
@@ -115,7 +114,6 @@ function shouldIgnoreNodeByLine(codeLines: string[], ignoreLines: number[], node
     const prevContent = codeLines[prevLine - 1] || '';
     if (prevContent.trim() === '') break;
     if (prevContent.trim().startsWith('//') && ignoreLines.includes(prevLine)) return true;
-    break;
   }
   return false;
 }
@@ -271,21 +269,17 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
     }
 
     // 扩展块级作用域：// @i18n-ignore 单独成行时（例如 const 声明块之前），
-    // 后续所有非空行内的中文字符串也应被忽略，直到遇到空行（逻辑块边界）。
-    // 仅追溯独立成行的 i18n-ignore（trim 后以 // 开头），
-    // 避免把行尾注释（如 code, // @i18n-ignore）的"作用域"扩大。
+    // 后续所有非空行内的中文字符串也应被忽略，直到遇到空行（块边界）。
+    // 注意：JS 中 const/let/var 等声明本身可能跨多行（`const x = [` 后到 `];`），
+    // scanner 无法识别这种语法边界，因此遇到 const 关键字不会 break。
+    // 用户若希望把 ignore 限定在单一声明块，应在声明之间用空行分隔。
     for (let i = 1; i <= 10; i++) {
       const prevLine = nodeStartLine - i;
       if (prevLine < 1) break;
       const prevContent = codeLines[prevLine - 1] || '';
-      // 遇到空行：ignore 作用域结束
-      if (prevContent.trim() === '') break;
-      // 仅当是独立成行的 i18n-ignore 注释时，才扩展作用域
-      if (prevContent.trim().startsWith('//') && ignoreLines.includes(prevLine)) {
-        return true;
-      }
-      // 否则遇到非空非 ignore 行就停止回溯（隔了正常代码行）
-      break;
+      if (prevContent.trim() === '') break; // 空行：块边界
+      if (prevContent.trim().startsWith('//') && ignoreLines.includes(prevLine)) return true;
+      // 中间隔了正常代码行：继续向上回溯
     }
 
     return false;
