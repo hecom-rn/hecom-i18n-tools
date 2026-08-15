@@ -254,15 +254,22 @@ export async function genCommand(opts: any) {
   // 遍历所有工作表，构建 langMap 和 keyCategoryMap
   // 记录每个 key 的 category（来自 Excel 的 category 列），用于 gen 阶段决定是否覆盖现有翻译
   const keyCategoryMap: Record<string, string> = {};
+  // 记录每个 key 的全部 row 是否至少有一个是 normal。Mixed (button-label + normal 共存) 的 key
+  // 视为 normal：跳过覆写，避免 buttonLabelRules 误判误改非按钮文案。
+  const keyHasNormal: Record<string, boolean> = {};
   const GEN_RESERVED_HEADERS = new Set(['key', 'file', 'line', 'gitlab', 'value', 'category']);
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(ws);
     rows.forEach((row: any) => {
       if (!row.key) return;
-      // 收集 category（同一 key 多处出现时以最后一次为准）
       if (row.category) {
-        keyCategoryMap[row.key] = row.category;
+        // 收集每个 key 出现过的所有 category
+        if (row.category === 'normal') keyHasNormal[row.key] = true;
+        // 写入策略：若该 key 出现 normal 行，视为 normal（不覆写）；否则按最后一次 row 的 category
+        if (!keyHasNormal[row.key]) {
+          keyCategoryMap[row.key] = row.category;
+        }
       }
       Object.keys(row).forEach((k) => {
         if (!GEN_RESERVED_HEADERS.has(k)) {
@@ -282,8 +289,10 @@ export async function genCommand(opts: any) {
         fs.readFileSync(outputPath, 'utf8')
       );
       Object.keys(langMap[lang]).forEach((k) => {
-        // button-label 类条目预期会被新译文覆盖，跳过冲突检测（避免误报）
-        if (keyCategoryMap[k] === 'button-label') return;
+        // safe button-label 类条目预期会被新译文覆盖，跳过冲突检测（避免误报）
+        // mixed key（button-label + normal 共存）也跳过冲突检测（视为 normal，不覆写）
+        if (keyCategoryMap[k] === 'button-label' && !keyHasNormal[k]) return;
+        if (keyHasNormal[k]) return; // mixed key 视为 normal，不报警
         if (Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
           const oldVal = existingLangMap[k];
           const newVal = langMap[lang][k];
@@ -336,8 +345,8 @@ export async function genCommand(opts: any) {
 
 // 写入语言包文件
   //   - 新 key：直接追加
-  //   - 已有 key + category='button-label'：用新译文覆盖（AI 按 prompt-i18n.txt 重新润色）
-  //   - 已有 key + 其它 category：保留原值（避免误改 normal 文案）
+  //   - 已有 key + category='button-label' + 全 row 都是 button-label：用新译文覆盖（AI 按 prompt-i18n.txt 重新润色）
+  //   - 已有 key + 任意 row 是 normal（含 mixed 情况）：保留原值（避免误改 normal 文案）
   fs.mkdirSync(out, { recursive: true });
   let overriddenCount = 0;
   Object.keys(langMap).forEach((lang) => {
@@ -356,12 +365,17 @@ export async function genCommand(opts: any) {
           if (!Object.prototype.hasOwnProperty.call(existingLangMap, k)) {
             // 新 key：直接追加
             finalMap[k] = newVal;
-          } else if (keyCategoryMap[k] === 'button-label' && hasNewTranslation) {
-            // button-label 类条目：用新译文覆盖（润色）
+          } else if (
+            keyCategoryMap[k] === 'button-label' &&
+            !keyHasNormal[k] &&
+            hasNewTranslation
+          ) {
+            // 安全 button-label 类条目（所有 row 都是 button-label，无 normal 行）：
+            // 用新译文覆盖（润色）。Mixed (button-label + normal 共存) 的 key 跳过覆写。
             if (finalMap[k] !== newVal) overriddenCount++;
             finalMap[k] = newVal;
           }
-          // 其它情况（normal 类 + 已有 key）：保留现有值，不写入
+          // 其它情况（normal/mixed + 已有 key）：保留现有值，不写入
         });
       } catch (e) {
         console.warn(`读取现有文件 ${outputPath} 失败，忽略旧内容: ${e}`);

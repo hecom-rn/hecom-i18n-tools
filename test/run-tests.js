@@ -354,6 +354,43 @@ async function testGenIgnoresCategoryColumn() {
   return 'testGenIgnoresCategoryColumn passed';
 }
 
+async function testGenSkipsMixedCategoryKeys() {
+  const dir = tempDir('i18n-gen-mixed-');
+  const excel = path.join(dir, 'data.xlsx');
+  const outDir = path.join(dir, 'out');
+  fs.mkdirSync(outDir);
+  // 已有 en.json：safe button-label、mixed (normal+button-label)、normal 都已有翻译
+  fs.writeFileSync(path.join(outDir, 'en.json'), JSON.stringify({
+    safe_btn: 'OldSafe',
+    mixed_key: 'OldMixed',
+    pure_normal: 'NormalEn',
+    pure_btn: 'OldPure',
+  }, null, 2));
+  // Excel 含同一 key 在不同上下文被识别为不同 category 的场景
+  // 注：normal 条目的 en 列必须与 locales/en.json 一致（模拟 scan prefill 行为），否则会触发冲突抛错
+  createExcel(excel, {
+    Sheet1: [
+      // 全部 row 都是 button-label → 应覆写
+      { key: 'pure_btn',   zh: '纯按钮', en: 'NewPure', category: 'button-label' },
+      // 全部 row 都是 normal → 应保留（en 与 locales 一致避免冲突）
+      { key: 'pure_normal',zh: '纯普通', en: 'NormalEn', category: 'normal' },
+      // 多个 row 中既有 button-label 又有 normal → 应跳过覆写（保留 OldMixed）
+      { key: 'mixed_key',  zh: '混合key', en: 'NewMixed', category: 'button-label' },
+      { key: 'mixed_key',  zh: '混合key', en: 'OldMixed', category: 'normal' },
+      // 同 key 都是 button-label 的多 row → 应覆写
+      { key: 'safe_btn',   zh: '安全按钮', en: 'NewSafe', category: 'button-label' },
+      { key: 'safe_btn',   zh: '安全按钮', en: 'NewSafe', category: 'button-label' },
+    ]
+  });
+  await genCommand({ excel, out: outDir });
+  const enJson = JSON.parse(fs.readFileSync(path.join(outDir, 'en.json'), 'utf8'));
+  assert.strictEqual(enJson.pure_btn,    'NewPure',   '全部 button-label 应覆写');
+  assert.strictEqual(enJson.pure_normal, 'NormalEn',  '全部 normal 应保留');
+  assert.strictEqual(enJson.mixed_key,   'OldMixed',  'mixed key 应跳过覆写（避免误改 normal）');
+  assert.strictEqual(enJson.safe_btn,    'NewSafe',   'safe button-label 应覆写');
+  return 'testGenSkipsMixedCategoryKeys passed';
+}
+
 (async () => {
   const tests = [
     testNoConflict,
@@ -370,7 +407,8 @@ async function testGenIgnoresCategoryColumn() {
     testButtonLabelComponent,
     testButtonLabelInlineComment,
     testButtonLabelDisabledByDefault,
-    testGenIgnoresCategoryColumn
+    testGenIgnoresCategoryColumn,
+    testGenSkipsMixedCategoryKeys
   ];
   for (const t of tests) {
     try {
