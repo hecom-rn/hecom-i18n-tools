@@ -18,6 +18,7 @@ function runPythonTranslate(opts: {
   python?: string;
   prompt?: string;
   promptFile?: string;
+  categoryColumn?: string;
 }) {
   const scriptPath = path.join(__dirname, '..', 'scripts', 'translate_cli.py');
   if (!fs.existsSync(scriptPath)) {
@@ -30,10 +31,11 @@ function runPythonTranslate(opts: {
     '--out',   opts.out,
     '--api-key', opts.apiKey,
   ];
-  if (opts.keys)       args.push('--keys',        opts.keys);
-  if (opts.langs)      args.push('--langs',        opts.langs);
-  if (opts.prompt)     args.push('--prompt',       opts.prompt);
-  if (opts.promptFile) args.push('--prompt-file',  opts.promptFile);
+  if (opts.keys)          args.push('--keys',             opts.keys);
+  if (opts.langs)         args.push('--langs',            opts.langs);
+  if (opts.prompt)        args.push('--prompt',           opts.prompt);
+  if (opts.promptFile)    args.push('--prompt-file',      opts.promptFile);
+  if (opts.categoryColumn !== undefined) args.push('--category-column', opts.categoryColumn);
 
   const python = opts.python || 'python3';
   const result = spawnSync(python, args, { stdio: 'inherit' });
@@ -100,16 +102,18 @@ program
   .option('--python <python>', 'Python 可执行路径（默认: python3）')
   .option('--prompt <prompt>', '自定义 Prompt 模板（需含 {text} 和 {target_lang}）')
   .option('--prompt-file <promptFile>', 'Prompt 模板文件路径')
+  .option('--category-column <categoryColumn>', '承载 category 元数据的列名（默认: category；传空字符串禁用）')
   .action((opts) => {
     runPythonTranslate({
-      excel:      opts.excel,
-      out:        opts.out,
-      apiKey:     opts.apiKey,
-      keys:       opts.keys,
-      langs:      opts.langs,
-      python:     opts.python,
-      prompt:     opts.prompt,
-      promptFile: opts.promptFile,
+      excel:         opts.excel,
+      out:           opts.out,
+      apiKey:        opts.apiKey,
+      keys:          opts.keys,
+      langs:         opts.langs,
+      python:        opts.python,
+      prompt:        opts.prompt,
+      promptFile:    opts.promptFile,
+      categoryColumn: opts.categoryColumn,
     });
   });
 
@@ -130,6 +134,7 @@ program
   .option('-r, --conflict-report <conflictReport>', '冲突报告输出路径')
   .option('-l, --fixLint <fixLint>', '替换后是否运行 Prettier 格式化（默认: true）')
   .option('-p, --prettier-config <prettierConfig>', 'Prettier 配置文件路径')
+  .option('--category-column <categoryColumn>', '承载 category 元数据的列名（默认: category；传空字符串禁用）')
   .action(async (opts) => {
     // 支持逗号分隔 src
     if (typeof opts.src === 'string' && opts.src.includes(',')) {
@@ -155,12 +160,13 @@ program
     if (opts.apiKey) {
       console.log('\n========== [3/4] AI 翻译空白列 ==========');
       runPythonTranslate({
-        excel:      opts.excel,
-        out:        opts.excel,   // 原地覆盖
-        apiKey:     opts.apiKey,
-        langs:      opts.langs,
-        python:     opts.python,
-        promptFile: opts.promptFile,
+        excel:         opts.excel,
+        out:           opts.excel,   // 原地覆盖
+        apiKey:        opts.apiKey,
+        langs:         opts.langs,
+        python:        opts.python,
+        promptFile:    opts.promptFile,
+        categoryColumn: opts.categoryColumn,
       });
     } else {
       console.log('\n[3/4] 未提供 --api-key，跳过翻译步骤。');

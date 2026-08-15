@@ -5,7 +5,7 @@ import traverse, { NodePath } from '@babel/traverse';
 import xlsx from 'xlsx';
 import { generateGitlabUrl } from './gitlab';
 import crypto from 'crypto';
-import scanOptions from './scannerOptions';
+import scanOptions, { ButtonLabelRules } from './scannerOptions';
 
 
 interface ScanResult {
@@ -14,6 +14,7 @@ interface ScanResult {
   file: string;
   line: number;
   gitlab: string;
+  category: 'button-label' | 'normal';
 }
 
 const DEFAULT_LANGUAGES = ['en', 'es', 'pt', 'th'];
@@ -28,6 +29,8 @@ interface ScanOptions {
   ignoreLogObjects?: string[];
   // 新增：可配置需要忽略的方法名（例如 ['captureMessage']）
   ignoreLogMethods?: string[];
+  // 新增：按钮 label 识别规则（未配置则全部归类为 normal）
+  buttonLabelRules?: ButtonLabelRules;
 }
 
 // 默认哈希生成函数
@@ -233,6 +236,90 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
       return false;
     }
 
+    // 判断一个中文字符串字面量是否处于"按钮 label"上下文
+    // 规则按优先级命中即返回：
+    //   1) 父链是 JSXAttribute 且属性名命中 jsxAttributes 白名单
+    //   2) 父链是某个 alertCallees 调用的数组参数，且是该参数 ObjectExpression 的 text 字段
+    //   3) 当前节点是 JSXText 且直接父元素标签命中 buttonComponents 白名单
+    //   4) 上一行注释包含 inlineComment 标记
+    const buttonRules: ButtonLabelRules | undefined = options.buttonLabelRules;
+    function detectButtonLabel(path: NodePath<any>, nodeType: 'StringLiteral' | 'JSXText' | 'TemplateLiteral'): boolean {
+      if (!buttonRules) return false;
+      const maxDepth = buttonRules.ancestorDepth ?? 4;
+
+      // 规则 1 + 2: 仅 StringLiteral 适用（JSXText 的父级直接是 JSXElement，不可能命中规则 1）
+      if (nodeType === 'StringLiteral') {
+        // 规则 1: 父链上溯到 JSXAttribute，属性名命中
+        let p: NodePath<any> | null = path.parentPath;
+        let depth = 0;
+        while (p && depth < maxDepth) {
+          if (p.isJSXAttribute()) {
+            const attrName = (p.node as any).name?.name;
+            if (attrName && buttonRules.jsxAttributes?.includes(attrName)) return true;
+            return false;
+          }
+          if (p.isJSXElement()) break;
+          p = p.parentPath;
+          depth++;
+        }
+
+        // 规则 2: Alert.alert(...) 数组参数（或直接参数）里 ObjectExpression 的 text 字段
+        let c: NodePath<any> | null = path.parentPath;
+        depth = 0;
+        while (c && depth < maxDepth) {
+          if (c.isCallExpression()) {
+            const callee: any = c.node.callee;
+            const name = callee?.type === 'Identifier' ? callee.name
+                       : callee?.type === 'MemberExpression' ? callee.property?.name
+                       : null;
+            if (name && buttonRules.alertCallees?.includes(name)) {
+              const args: any[] = c.node.arguments || [];
+              for (const arg of args) {
+                if (!arg) continue;
+                const candidates = arg.type === 'ArrayExpression' ? (arg.elements || []) : [arg];
+                for (const item of candidates) {
+                  if (!item || item.type !== 'ObjectExpression') continue;
+                  if (!Array.isArray(item.properties)) continue;
+                  for (const prop of item.properties) {
+                    if (prop?.type !== 'ObjectProperty') continue;
+                    const k = prop.key?.name ?? prop.key?.value;
+                    if (k === 'text' && prop.value === path.node) return true;
+                  }
+                }
+              }
+              return false;
+            }
+            return false;
+          }
+          c = c.parentPath;
+          depth++;
+        }
+      }
+
+      // 规则 3: JSXText 祖先链上存在 buttonComponents 白名单标签
+      //        （覆盖 <Button><Text>...</Text></Button>、<TouchableOpacity><Text>...</Text></TouchableOpacity> 等典型按钮结构）
+      if (nodeType === 'JSXText') {
+        let t: NodePath<any> | null = path.parentPath;
+        while (t) {
+          if (t.isJSXElement()) {
+            const opening: any = (t.node as any).openingElement;
+            const tagName = opening?.name?.name;
+            if (tagName && buttonRules.buttonComponents?.includes(tagName)) return true;
+          }
+          t = t.parentPath;
+        }
+      }
+
+      // 规则 4: 上一行注释命中 inlineComment 标记
+      const startLine = (path.node as any).loc?.start.line;
+      if (startLine && startLine > 1) {
+        const prevLine = codeLines[startLine - 2] || '';
+        if (prevLine.includes(buttonRules.inlineComment ?? '// @i18n:button-label')) return true;
+      }
+
+      return false;
+    }
+
     // 判断节点或其前后关联注释中是否含有 i18n-ignore
     function hasIgnoreComment(path: NodePath<any>): boolean {
       const node: any = path.node;
@@ -295,7 +382,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           }
           const key = 'i18n_' + generateStableHash(value);
           const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
-          results.push({ key, value, file: relPath, line, gitlab });
+          const category = detectButtonLabel(path, 'StringLiteral') ? 'button-label' : 'normal';
+          results.push({ key, value, file: relPath, line, gitlab, category });
         }
       },
       TemplateLiteral(path: NodePath<any>) {
@@ -356,7 +444,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
             }
             const key = 'i18n_' + generateStableHash(fullValue);
             const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
-            results.push({ key, value: fullValue, file: relPath, line, gitlab });
+            const category = detectButtonLabel(path, 'TemplateLiteral') ? 'button-label' : 'normal';
+            results.push({ key, value: fullValue, file: relPath, line, gitlab, category });
           }
         }
       },
@@ -396,7 +485,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
           }
           const key = 'i18n_' + generateStableHash(value.trim());
           const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
-          results.push({ key, value: value.trim(), file: relPath, line, gitlab });
+          const category = detectButtonLabel(path, 'JSXText') ? 'button-label' : 'normal';
+          results.push({ key, value: value.trim(), file: relPath, line, gitlab, category });
         }
       }
     });
@@ -470,7 +560,7 @@ export async function scanCommand(opts: any) {
       : DEFAULT_LANGUAGES;
 
     const wsData = await Promise.all(all.map(async (row) => {
-      const { key, value, file, line, gitlab } = row;
+      const { key, value, file, line, gitlab, category } = row;
       const link = gitlab ? (gitlab.includes('#L') ? gitlab : gitlab + '#L' + line) : '';
       const translated: Record<string, string | undefined> = {};
       if (configOptions.translate) {
@@ -483,6 +573,7 @@ export async function scanCommand(opts: any) {
       return {
         gitlab: link ? { t: 's', l: { Target: link }, v: '链接' } : '',
         zh: value,
+        category: category ?? 'normal',
         ...translated,
         file,
         line,
