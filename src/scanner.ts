@@ -488,7 +488,8 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
         // 只取最后一个块注释或行注释片段
         const blockMatch = /\/\*[\s\S]*?i18n-ignore[\s\S]*?\*\/$/.exec(prefix);
         if (blockMatch) return true;
-        const lineMatch = /\/\/.*i18n-ignore[\s\S]*?$/.exec(prefix);
+        // 行内匹配：// ... i18n-ignore ... 必须在同一行（不跨行匹配，否则会误判后续字符串值中包含 "i18n-ignore" 的场景）
+        const lineMatch = /\/\/[^\n]*i18n-ignore[^\n]*$/.exec(prefix);
         if (lineMatch) return true;
       }
       return false;

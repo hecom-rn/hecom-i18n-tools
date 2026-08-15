@@ -332,6 +332,36 @@ async function testButtonLabelDisabledByDefault() {
   return 'testButtonLabelDisabledByDefault passed';
 }
 
+// 回归测试：hasIgnoreComment 的正则曾因 [\s\S]*?$ 跨行匹配，
+// 导致同文件后续 StringLiteral（其值中含 "i18n-ignore" 字符）被错误忽略。
+async function testIgnoreRegexDoesNotMatchAcrossLines() {
+  const dir = tempDir('i18n-ignore-regex-');
+  const file = path.join(dir, 'sample.tsx');
+  // 第 5 行 // @i18n-ignore 标记的上一行 StringLiteral 包含字面量 "i18n-ignore"
+  // 修复前：第 6 行的 StringLiteral 也会被错误忽略
+  fs.writeFileSync(
+    file,
+    "function Page() {\n" +
+    "  return (\n" +
+    "    <div>\n" +
+    "      <span>{\"普通中文\"}</span>\n" +
+    "      // @i18n-ignore\n" +
+    "      <span>{\"前一行有i18n-ignore\"}</span>\n" +
+    "      <span>{\"尾部忽略\"}</span>\n" +
+    "    </div>\n" +
+    "  );\n" +
+    "}\n",
+    'utf8'
+  );
+  const results = extractStringsFromFile(file, {});
+  const byValue = {};
+  for (const r of results) byValue[r.value] = r;
+  assert.ok(byValue['普通中文'], '"普通中文" 应被扫描');
+  assert.ok(!byValue['前一行有i18n-ignore'], '"前一行有i18n-ignore"（前一行含 i18n-ignore 注释）应被忽略');
+  assert.ok(byValue['尾部忽略'], '"尾部忽略"（与 i18n-ignore 注释隔了一行）不应被错误忽略');
+  return 'testIgnoreRegexDoesNotMatchAcrossLines passed';
+}
+
 async function testGenIgnoresCategoryColumn() {
   const dir = tempDir('i18n-gen-cat-');
   const excel = path.join(dir, 'data.xlsx');
@@ -408,7 +438,8 @@ async function testGenSkipsMixedCategoryKeys() {
     testButtonLabelInlineComment,
     testButtonLabelDisabledByDefault,
     testGenIgnoresCategoryColumn,
-    testGenSkipsMixedCategoryKeys
+    testGenSkipsMixedCategoryKeys,
+    testIgnoreRegexDoesNotMatchAcrossLines
   ];
   for (const t of tests) {
     try {
