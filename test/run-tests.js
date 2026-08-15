@@ -455,6 +455,40 @@ async function testIgnoreRegexRejectsDescriptiveComment() {
   assert.ok(!byValue['应当扫描C'], '// @i18n-ignore 行尾注释后行 应被忽略');
   return 'testIgnoreRegexRejectsDescriptiveComment passed';
 }
+
+// 回归测试：replacer 的字符串回退路径（AST 不替换时）也必须尊重 // @i18n-ignore。
+// 场景：源文件中只有带 // @i18n-ignore 注释的中文字符串，AST 路径应忽略它们
+// （replaced=false），但字符串回退路径如果不检查 ignore 注释，会错误替换。
+async function testReplaceFallbackRespectsIgnore() {
+  const dir = tempDir('i18n-replace-fallback-');
+  const srcFile = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    srcFile,
+    "function Page() {\n" +
+    "  const a = '应保留'; // @i18n-ignore\n" +
+    "  return null;\n" +
+    "}\n",
+    'utf8'
+  );
+  const excel = path.join(dir, 'data.xlsx');
+  createExcel(excel, {
+    Sheet1: [
+      { key: 'i18n_keep', zh: '应保留', file: srcFile, line: 2 },
+    ]
+  });
+  replaceCommand({ excel, importPath: 'core/util/i18n', fixLint: 'false' });
+
+  const after = fs.readFileSync(srcFile, 'utf8');
+  assert.ok(
+    after.includes("'应保留'"),
+    '字符串回退路径不应替换 // @i18n-ignore 注释行中的中文，原文应保留，实际:\n' + after
+  );
+  assert.ok(
+    !after.includes("t('i18n_keep')"),
+    '不应生成 t() 调用包裹的中文，实际:\n' + after
+  );
+  return 'testReplaceFallbackRespectsIgnore passed';
+}
   async function testGenIgnoresCategoryColumn() {
   const dir = tempDir('i18n-gen-cat-');
   const excel = path.join(dir, 'data.xlsx');
@@ -534,6 +568,7 @@ async function testGenSkipsMixedCategoryKeys() {
     testGenSkipsMixedCategoryKeys,
 testIgnoreRegexDoesNotMatchAcrossLines,
     testIgnoreRegexRejectsDescriptiveComment,
+    testReplaceFallbackRespectsIgnore
   ];
   for (const t of tests) {
     try {

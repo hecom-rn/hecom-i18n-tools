@@ -334,8 +334,10 @@ export function replaceCommand(opts: any) {
     }
 
     // 查找 i18n-ignore 注释标记的行
+    // 严格匹配：注释主体必须以 @?i18n-ignore 开头（行注释独占一行或行尾均可），
+    // 避免描述性注释中包含 "i18n-ignore" 子串时被误识别为忽略指令。
     const ignoreLines: number[] = [];
-    const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
+    const ignoreRegex = /(?:^|[^\n])\/\/\s*@?i18n-ignore\b|^\s*\/\*\s*@?i18n-ignore\b[\s\S]*?\*\//m;
     let lineIndex = 0;
     let lineStart = 0;
     for (let i = 0; i <= code.length; i++) {
@@ -349,10 +351,26 @@ export function replaceCommand(opts: any) {
         }
     }
 
+    // 构建 charIndex -> lineNumber(1-based) 的查找表，给字符串回退路径用
+    const lineEndOffsets: number[] = [];
+    for (let i = 0; i < code.length; i++) {
+        if (code[i] === '\n') lineEndOffsets.push(i);
+    }
+    function charIndexToLine(idx: number): number {
+        // 二分查找：第一个换行符位置 >= idx
+        let lo = 0, hi = lineEndOffsets.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (lineEndOffsets[mid] < idx) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo + 1;
+    }
+
     function isInComment(start: number, end: number) {
         return commentRanges.some(r => start >= r.start && end <= r.end);
     }
-    
+
 
     // 检查 AST 节点的范围内是否有 i18n-ignore 注释
     function shouldIgnoreNode(nodeStartLine: number, nodeEndLine: number): boolean {
@@ -362,13 +380,13 @@ export function replaceCommand(opts: any) {
             return true;
         }
         }
-        
+
         // 还要检查节点开始行的前一行是否有 i18n-ignore 注释
         // 这是为了处理注释在前、字符串在后的情况
         if (ignoreLines.includes(nodeStartLine - 1)) {
         return true;
         }
-        
+
         return false;
     }
 
@@ -656,13 +674,17 @@ export function replaceCommand(opts: any) {
         const escapedValue = escapeRegExp(value);
         // 仅匹配形如 'value'、"value"、`value` 的引号包围字面量
         const reg = new RegExp(`(['"` + '`' + `])${escapedValue}\\1`, 'g');
-        // 收集所有匹配的 [start, end]，剔除落在注释区间内的命中
+        // 收集所有匹配的 [start, end]，剔除落在注释区间内或被 // @i18n-ignore 作用范围覆盖的命中
         const matches: Array<{ start: number; end: number; replacement: string }> = [];
         let m: RegExpExecArray | null;
         while ((m = reg.exec(code))) {
           const start = m.index;
           const end = m.index + m[0].length;
           if (isInComment(start, end)) continue; // 跳过注释内的字面量
+          // 跳过被 // @i18n-ignore 注释作用域覆盖的中文字面量
+          const startLine = charIndexToLine(start);
+          const endLine = charIndexToLine(Math.max(start, end - 1));
+          if (shouldIgnoreNode(startLine, endLine)) continue;
           matches.push({ start, end, replacement: `t('${row.key}')` });
         }
         // 从后往前替换，避免位置偏移
