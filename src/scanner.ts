@@ -229,8 +229,11 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
   }
 
   // 查找 i18n-ignore 注释标记的行
+  // 严格匹配：注释主体必须以 @?i18n-ignore 开头（行注释独占一行或行尾均可），
+  // 块注释要求 /* 后紧跟 @?i18n-ignore。避免描述性注释中包含 "i18n-ignore"
+  // 子串时被误识别为忽略指令。
   const ignoreLines: number[] = [];
-  const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
+  const ignoreRegex = /(?:^|[^\n])\/\/\s*@?i18n-ignore\b|^\s*\/\*\s*@?i18n-ignore\b[\s\S]*?\*\//m;
   let lineIndex = 0;
   let lineStart = 0;
   for (let i = 0; i <= code.length; i++) {
@@ -507,29 +510,30 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
     }
 
     // 判断节点或其前后关联注释中是否含有 i18n-ignore
+    // 严格匹配：注释主体必须以 @?i18n-ignore 开头，避免描述性注释中的子串误命中。
     function hasIgnoreComment(path: NodePath<any>): boolean {
       const node: any = path.node;
       // 行号方式：本行、上一行、上一行到本行之间的块注释
       if (!node.loc) return false;
       const startLine = node.loc.start.line;
       const endLine = node.loc.end.line;
-      // 检查节点前一行
+      // 检查节点前一行（独立成行的 // 注释）
       if (startLine > 1) {
         const prevLine = codeLines[startLine - 2];
-        if (/\/\/.*i18n-ignore/.test(prevLine)) return true;
+        if (/^\s*\/\/\s*@?i18n-ignore\b/.test(prevLine)) return true;
       }
-      // 当前行尾部注释
+      // 当前行尾部 // 注释（要求 // 前是空白/标点/行首）
       const currentLine = codeLines[startLine - 1];
-      if (/\/\/.*i18n-ignore/.test(currentLine)) return true;
+      if (/(?:^|[^\w\/])\/\/\s*@?i18n-ignore\b/.test(currentLine)) return true;
       // 查找与节点相邻的块注释：在源码中截取节点开始前的最多300字符
       if (node.start !== undefined) {
         const lookBehindStart = Math.max(0, node.start - 300);
         const prefix = code.slice(lookBehindStart, node.start);
-        // 只取最后一个块注释或行注释片段
-        const blockMatch = /\/\*[\s\S]*?i18n-ignore[\s\S]*?\*\/$/.exec(prefix);
+        // 只取最后一个块注释片段：/* @?i18n-ignore ... */
+        const blockMatch = /\/\*\s*@?i18n-ignore\b[\s\S]*?\*\/$/.exec(prefix);
         if (blockMatch) return true;
-        // 行内匹配：// ... i18n-ignore ... 必须在同一行（不跨行匹配，否则会误判后续字符串值中包含 "i18n-ignore" 的场景）
-        const lineMatch = /\/\/[^\n]*i18n-ignore[^\n]*$/.exec(prefix);
+        // 行尾注释：// 后面紧跟 @?i18n-ignore（不跨行匹配，避免误判字符串值中含 "i18n-ignore" 的场景）
+        const lineMatch = /\/\/\s*@?i18n-ignore\b[^\n]*$/.exec(prefix);
         if (lineMatch) return true;
       }
       return false;
@@ -708,9 +712,9 @@ function extractTCallsFromFile(
 
   if (code.includes('i18n-ignore-file')) return results;
 
-  // 收集 // i18n-ignore / /* ... i18n-ignore ... */ 注释行号
+// 收集 // i18n-ignore / /* i18n-ignore */ 注释行号
   // （与 extractStringsFromFile 内的 ignoreLines 收集逻辑一致）
-  const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
+  const ignoreRegex = /(?:^|[^\n])\/\/\s*@?i18n-ignore\b|^\s*\/\*\s*@?i18n-ignore\b[\s\S]*?\*\//m;
   const ignoreLines: number[] = [];
   for (let li = 0; li < codeLines.length; li++) {
     if (ignoreRegex.test(codeLines[li])) ignoreLines.push(li + 1);

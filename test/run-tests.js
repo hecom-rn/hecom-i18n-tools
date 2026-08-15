@@ -7,6 +7,7 @@ const os = require('os');
 const xlsx = require('xlsx');
 const { genCommand } = require('../dist/i18nGenerator');
 const { extractStringsFromFile, scanCommand, extractTCallsFromFile } = require('../dist/scanner');
+const { replaceCommand } = require('../dist/replacer');
 
 let passed = 0;
 let failed = 0;
@@ -427,6 +428,33 @@ async function testLegacyScanRespectsIgnoreScope() {
   assert.ok(byValue['应当扫描'], 'legacy 扫描中：与 ignore 注释隔了空行的 t() 应被扫描');
   return 'testLegacyScanRespectsIgnoreScope passed';
 }
+
+// 回归测试：hasIgnoreComment 的正则 /\/\/.*i18n-ignore/ 过于宽松，
+// 描述性注释中只要包含 "i18n-ignore" 子串（如 `// 案例：避免 i18n-ignore 误命中`）
+// 就会被错误识别为忽略指令，导致下一行/同行中文字符串被忽略。
+// 修复后：注释主体必须以 "i18n-ignore" 或 "@i18n-ignore" 开头才视为忽略指令。
+async function testIgnoreRegexRejectsDescriptiveComment() {
+  const dir = tempDir('i18n-ignore-reject-desc-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "function Page() {\n" +
+    "  // 案例：避免 i18n-ignore 误命中\n" +
+    "  const a = '应当扫描A';\n" +
+    "  const b = '应当扫描B'; // 普通描述中包含 i18n-ignore 关键字\n" +
+    "  const c = '应当扫描C'; // @i18n-ignore 是合法忽略指令\n" +
+    "  return null;\n" +
+    "}\n",
+    'utf8'
+  );
+  const results = extractStringsFromFile(file, {});
+  const byValue = {};
+  for (const r of results) byValue[r.value] = r;
+  assert.ok(byValue['应当扫描A'], '描述性注释 // 案例：避免 i18n-ignore 误命中 后行应被扫描');
+  assert.ok(byValue['应当扫描B'], '行尾注释含 i18n-ignore 子串但非指令 应被扫描');
+  assert.ok(!byValue['应当扫描C'], '// @i18n-ignore 行尾注释后行 应被忽略');
+  return 'testIgnoreRegexRejectsDescriptiveComment passed';
+}
   async function testGenIgnoresCategoryColumn() {
   const dir = tempDir('i18n-gen-cat-');
   const excel = path.join(dir, 'data.xlsx');
@@ -504,7 +532,8 @@ async function testGenSkipsMixedCategoryKeys() {
     testButtonLabelDisabledByDefault,
     testGenIgnoresCategoryColumn,
     testGenSkipsMixedCategoryKeys,
-    testIgnoreRegexDoesNotMatchAcrossLines
+testIgnoreRegexDoesNotMatchAcrossLines,
+    testIgnoreRegexRejectsDescriptiveComment,
   ];
   for (const t of tests) {
     try {
