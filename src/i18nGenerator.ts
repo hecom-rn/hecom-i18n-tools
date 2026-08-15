@@ -87,6 +87,241 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
   console.log(`已将 ${path.basename(resolvedSrc)} 合并到主表 ${resolvedMaster}`);
 }
 
+// ----------------------------- 翻译质量校验 --------------------------------
+
+/**
+ * 翻译质量问题类型
+ * - CJK_IN_NON_ZH: 非中文语言包含中文字符（如俄语翻译里出现"业务"）
+ * - PROMPT_LEAK: 译文包含 LLM prompt 关键词（说明 LLM 回显了 prompt 内容）
+ * - BUTTON_LABEL_TOO_LONG: button-label 译文超过阈值（违反极简规则）
+ */
+export type ValidationIssueType =
+  | 'CJK_IN_NON_ZH'
+  | 'PROMPT_LEAK'
+  | 'BUTTON_LABEL_TOO_LONG';
+
+export interface ValidationIssue {
+  sheet: string;
+  key: string;
+  lang: string;
+  zh: string;
+  value: string;
+  category: string;
+  issue: ValidationIssueType;
+}
+
+export interface ValidateOptions {
+  /** button-label 译文最大字符数（默认 30） */
+  maxButtonLabelLen?: number;
+}
+
+// 检测 CJK 字符（中日韩统一表意文字基本平面 + 扩展 A）
+// 1-鿿 = U+4E00..U+9FFF 基本平面；㐀-䶿 = U+3400..U+4DBF 扩展 A
+const CJK_REGEX = /[一-鿿㐀-䶿]/;
+
+// LLM prompt 关键词（用于检测 prompt 回显）。仅检测多语言中稳定出现的高熵短语，
+// 避免误报普通翻译中含"Catég"等子串的合法条目。
+const PROMPT_MARKERS: string[] = [
+  '【硬性约束',
+  '硬性限制',
+  '【жёстк', // 俄文 "жёсткое/жёсткие ограничения"
+  'Restrição obrigatória', // 葡
+  'Contrainte stricte', // 法
+  'Restricción obligatoria', // 西
+  'Catégorie : button-label', // 法尾部泄漏
+  'Categoría: button-label', // 西尾部泄漏
+  'target_lang', // 多语言共有的 prompt 变量名
+  '文案：{text}', // 中日泰等翻译源格式
+  'Texto:',
+  'Texte :',
+];
+
+const VALIDATION_RESERVED_HEADERS = new Set([
+  'key', 'file', 'line', 'gitlab', 'value', 'category', 'zh',
+]);
+
+/**
+ * 解析 master.xlsx 工作表为统一的 {col -> value} 格式。
+ * 容错处理两种已知结构：
+ * 1. 标准结构：row 0 是表头（A 列起），row 1+ 是数据
+ * 2. 历史遗留结构：row 0 的 A-L 列是表头（key/gitlab/...）但 M-X 列也是数字表头；
+ *    row 1 的 M-X 是表头（key/gitlab/...）副本；row 2+ 的 M-X 才是数据。
+ *    （mergeWorkbookIntoMaster 早期版本的产物：数据落在了 M-X 列）
+ * 这种情况直接用默认 sheet_to_json 时 row.key 永远为空（数据在 row['0']）。
+ *
+ * 返回：{ header: string[], rows: Array<Record<string, string>> }。
+ * header[i] 是第 i 列的语义名；rows[i][colName] 是该行该列的值。
+ */
+function parseSheetRows(ws: any): { header: string[]; rows: Array<Record<string, string>> } {
+  const arr: any[][] = xlsx.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  if (arr.length === 0) return { header: [], rows: [] };
+
+  // 检测真实表头行：候选为 row 0 或 row 1。
+  // 历史遗留结构（mergeWorkbookIntoMaster 早期版本产物）：
+  //   row 0：A-L 是 named headers ('key','gitlab',...,'category')，M-X 是数字 headers ('0','1',...)
+  //   row 1：A-L 全空，M-X 才是真实的 named headers
+  //   row 2+：A-L 全空，M-X 是真实数据
+  // 默认按 row 0 当表头时 row.key 永远为空；按 row 1 当表头时 row.key 才是真实 key。
+  // 检测方法：分别用 row 0 / row 1 当表头，看后续数据行里 row.key 非空的条数，取较多的那个。
+  const findKeyHits = (headerIdx: number): number => {
+    if (headerIdx < 0 || headerIdx >= arr.length) return 0;
+    const header = arr[headerIdx].map((c) => String(c ?? ''));
+    const keyColIdx = header.indexOf('key');
+    if (keyColIdx < 0) return 0;
+    let hits = 0;
+    for (let i = headerIdx + 1; i < arr.length; i++) {
+      const v = arr[i][keyColIdx];
+      if (typeof v === 'string' && v.startsWith('i18n_rn_')) hits++;
+    }
+    return hits;
+  };
+
+  let headerRowIdx = arr.findIndex(
+    (r) => Array.isArray(r) && r.some((c) => c === 'key')
+  );
+  if (headerRowIdx < 0) headerRowIdx = 0;
+
+  // 在候选行附近（0~3 行）选一个 row.key 命中率最高的，避免误选
+  let bestIdx = headerRowIdx;
+  let bestHits = findKeyHits(headerRowIdx);
+  for (let i = 0; i <= Math.min(headerRowIdx + 3, arr.length - 1); i++) {
+    if (i === headerRowIdx) continue;
+    const hits = findKeyHits(i);
+    if (hits > bestHits) {
+      bestHits = hits;
+      bestIdx = i;
+    }
+  }
+  headerRowIdx = bestIdx;
+
+  const header = arr[headerRowIdx].map((c) => String(c ?? ''));
+  const dataRows = arr.slice(headerRowIdx + 1);
+  const rows = dataRows.map((r) => {
+    const obj: Record<string, string> = {};
+    for (let i = 0; i < header.length; i++) {
+      const name = header[i];
+      if (!name) continue;
+      obj[name] = String(r[i] ?? '');
+    }
+    return obj;
+  });
+  return { header, rows };
+}
+
+/**
+ * 校验 master.xlsx 中的翻译质量，识别常见 LLM 输出问题：
+ * 1. 非中文语言包含中文字符（语言混淆，例如俄文混入"业务"）
+ * 2. 译文含 LLM prompt 关键词（prompt 回显）
+ * 3. button-label 译文过长（违反 prompt-i18n.txt 极简规则）
+ *
+ * 任何 issue 都意味着 LLM 输出不可信，应中止后续 i18n:gen 防止脏数据落盘到 locales。
+ *
+ * @param masterPath master.xlsx 路径
+ * @param opts 校验选项
+ * @returns 问题列表；返回 [] 表示无问题
+ */
+export function validateTranslations(
+  masterPath: string,
+  opts: ValidateOptions = {}
+): ValidationIssue[] {
+  const maxLen = opts.maxButtonLabelLen ?? 30;
+  if (!fs.existsSync(masterPath)) {
+    throw new Error(`[i18n-validate] master.xlsx 不存在: ${masterPath}`);
+  }
+  const wb = xlsx.readFile(masterPath);
+  const issues: ValidationIssue[] = [];
+
+  wb.SheetNames.forEach((sheetName) => {
+    const ws = wb.Sheets[sheetName];
+    const { rows } = parseSheetRows(ws);
+    rows.forEach((row) => {
+      if (!row.key) return;
+      const cat = row.category || 'normal';
+      const key = String(row.key);
+      const zh = row.zh || '';
+      Object.keys(row).forEach((col) => {
+        if (VALIDATION_RESERVED_HEADERS.has(col)) return;
+        const v = row[col];
+        if (!v || typeof v !== 'string') return;
+        // 检查1: 非中文语言包含 CJK 字符
+        if (CJK_REGEX.test(v)) {
+          issues.push({
+            sheet: sheetName,
+            key,
+            lang: col,
+            zh,
+            value: v,
+            category: cat,
+            issue: 'CJK_IN_NON_ZH',
+          });
+        }
+        // 检查2: 含 prompt 关键词（仅在值足够长时才报，避免单词误中）
+        if (v.length >= 12 && PROMPT_MARKERS.some((m) => v.includes(m))) {
+          issues.push({
+            sheet: sheetName,
+            key,
+            lang: col,
+            zh,
+            value: v,
+            category: cat,
+            issue: 'PROMPT_LEAK',
+          });
+        }
+        // 检查3: button-label 超长
+        if (cat === 'button-label' && v.length > maxLen) {
+          issues.push({
+            sheet: sheetName,
+            key,
+            lang: col,
+            zh,
+            value: v,
+            category: cat,
+            issue: 'BUTTON_LABEL_TOO_LONG',
+          });
+        }
+      });
+    });
+  });
+
+  return issues;
+}
+
+/**
+ * 打印校验问题到 stderr，按 issue 类型分组。
+ * 无问题时打印成功提示到 stdout。
+ */
+export function printValidationIssues(issues: ValidationIssue[]): void {
+  if (issues.length === 0) {
+    console.log('[i18n-validate] ✅ 所有翻译通过校验');
+    return;
+  }
+  // 按 issue 类型分组
+  const groups = new Map<ValidationIssueType, ValidationIssue[]>();
+  issues.forEach((iss) => {
+    if (!groups.has(iss.issue)) groups.set(iss.issue, []);
+    groups.get(iss.issue)!.push(iss);
+  });
+  const labels: Record<ValidationIssueType, string> = {
+    CJK_IN_NON_ZH: '非中文语言含中文字符',
+    PROMPT_LEAK: '译文含 prompt 关键词',
+    BUTTON_LABEL_TOO_LONG: 'button-label 译文超长',
+  };
+  console.error(`[i18n-validate] ❌ 发现 ${issues.length} 处翻译质量问题：`);
+  groups.forEach((items, type) => {
+    console.error(`\n  [${type}] ${labels[type]} (${items.length} 条)`);
+    items.forEach((iss) => {
+      const sample =
+        iss.value.length > 80 ? iss.value.slice(0, 80) + '...' : iss.value;
+      console.error(
+        `    ${iss.sheet}/${iss.lang} ${iss.key} (cat=${iss.category})`
+      );
+      console.error(`      zh: ${JSON.stringify(iss.zh)}`);
+      console.error(`      ${iss.lang}: ${JSON.stringify(sample)}`);
+    });
+  });
+  console.error(`\n请修复 master.xlsx 中上述条目后重试。`);
+}
+
 // ----------------------------- 邮件发送 ------------------------------------
 
 interface EmailConfig {

@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const xlsx = require('xlsx');
-const { genCommand } = require('../dist/i18nGenerator');
+const { genCommand, validateTranslations, printValidationIssues } = require('../dist/i18nGenerator');
 const { extractStringsFromFile, scanCommand, extractTCallsFromFile } = require('../dist/scanner');
 const { replaceCommand } = require('../dist/replacer');
 
@@ -548,6 +548,123 @@ async function testGenSkipsMixedCategoryKeys() {
   return 'testGenSkipsMixedCategoryKeys passed';
 }
 
+// 翻译质量校验：检测 i18n:flow 中 LLM 输出常见质量问题。
+// 场景：覆盖 CJK_IN_NON_ZH / PROMPT_LEAK / BUTTON_LABEL_TOO_LONG 三类问题 + 正常数据不误报。
+async function testValidateTranslations() {
+  const dir = tempDir('i18n-validate-');
+  const excel = path.join(dir, 'master.xlsx');
+  createExcel(excel, {
+    Sheet1: [
+      // 正常条目（应通过校验）
+      { key: 'k1', zh: '你好',   en: 'Hello',          category: 'normal' },
+      { key: 'k2', zh: '确认',   en: 'Confirm',        category: 'button-label' },
+      // 问题1：非中文语言含 CJK（俄文混入"业务"）
+      { key: 'k3', zh: '当前业务类型', ru: 'Текущий тип业务', category: 'button-label' },
+      // 问题2：prompt 回显（法语版整段 prompt）
+      { key: 'k4', zh: '重复',
+        fr: '[Contrainte stricte · Priorité maximale · Non négociable]  \n' +
+            '- Le texte chinois est la seule source autoritaire ; toute modification est strictement interdite\n' +
+            '  \nTexte : (répété)\nCatégorie : button-label',
+        category: 'button-label' },
+      // 问题3：button-label 超长（>30 字符）
+      { key: 'k5', zh: '异常考勤月份', en: 'This is a really long button label that should not exist', category: 'button-label' },
+      // 边缘：normal 类别下含 CJK 不应被 button-label 规则覆盖（按设计 normal 也报 CJK_IN_NON_ZH，但不过长规则）
+      { key: 'k6', zh: '泰国翻译含中文',
+        th: 'บ่อข้อมูลลูกค้า潜在',
+        category: 'normal' },
+    ]
+  });
+  const issues = validateTranslations(excel);
+  // 期望问题数：k3 (1 CJK) + k4 (1 PROMPT_LEAK，且因条目 >30 字同时报 BUTTON_LABEL_TOO_LONG)
+  //           + k5 (1 BUTTON_LABEL_TOO_LONG) + k6 (1 CJK) = 5
+  assert.strictEqual(issues.length, 5, '期望 5 处问题，实际：' + JSON.stringify(issues.map(i => i.key + ':' + i.issue)));
+  // k3: ru CJK_IN_NON_ZH
+  const k3 = issues.find(i => i.key === 'k3');
+  assert.ok(k3, 'k3 应有 issue');
+  assert.strictEqual(k3.issue, 'CJK_IN_NON_ZH');
+  assert.strictEqual(k3.lang, 'ru');
+  // k4: fr 同时命中 PROMPT_LEAK 和 BUTTON_LABEL_TOO_LONG（整段 prompt 一定 >30 字）
+  const k4Issues = issues.filter(i => i.key === 'k4');
+  assert.strictEqual(k4Issues.length, 2, 'k4 应有 2 处问题（PROMPT_LEAK + BUTTON_LABEL_TOO_LONG）');
+  assert.ok(k4Issues.some(i => i.issue === 'PROMPT_LEAK'), 'k4 应报 PROMPT_LEAK');
+  assert.ok(k4Issues.some(i => i.issue === 'BUTTON_LABEL_TOO_LONG'), 'k4 应报 BUTTON_LABEL_TOO_LONG');
+  assert.ok(k4Issues.every(i => i.lang === 'fr'), 'k4 的两条问题都是 fr');
+  // k5: en BUTTON_LABEL_TOO_LONG
+  const k5 = issues.find(i => i.key === 'k5');
+  assert.ok(k5, 'k5 应有 issue');
+  assert.strictEqual(k5.issue, 'BUTTON_LABEL_TOO_LONG');
+  assert.strictEqual(k5.lang, 'en');
+  // k6: th CJK_IN_NON_ZH（normal 类别仍报 CJK，由调用方决定是否 abort）
+  const k6 = issues.find(i => i.key === 'k6');
+  assert.ok(k6, 'k6 应有 issue');
+  assert.strictEqual(k6.issue, 'CJK_IN_NON_ZH');
+  return 'testValidateTranslations passed';
+}
+
+// 翻译质量校验：合法 button-label 不应被误报。
+async function testValidateNoFalsePositive() {
+  const dir = tempDir('i18n-validate-fp-');
+  const excel = path.join(dir, 'master.xlsx');
+  createExcel(excel, {
+    Sheet1: [
+      // 常见合法 button-label（各种语言）
+      { key: 'b1', zh: '取消', en: 'Cancel',                                  category: 'button-label' },
+      { key: 'b2', zh: '确认', en: 'Confirm',                                 category: 'button-label' },
+      { key: 'b3', zh: '上传', en: 'Upload',                                  category: 'button-label' },
+      { key: 'b4', zh: '重试', en: 'Retry',                                   category: 'button-label' },
+      { key: 'b5', zh: '取消', ru: 'Отмена',                                  category: 'button-label' },
+      { key: 'b6', zh: '确认', ru: 'Подтвердить',                             category: 'button-label' },
+      { key: 'b7', zh: '设为最新', en: 'Set as Latest',                        category: 'button-label' }, // 14 chars
+      { key: 'b8', zh: '部分失败', en: 'Partially Failed',                     category: 'button-label' }, // 17 chars
+      { key: 'b9', zh: '全部失败', en: 'All Failed',                           category: 'button-label' },
+      { key: 'b10', zh: '用其他应用打开', en: 'Open with…',                   category: 'button-label' }, // 含 CJK 在 zh 列（不算）
+      { key: 'b11', zh: '重复', en: 'Repeat',                                 category: 'button-label' },
+      // normal 类别下合法的英文（不应误报）
+      { key: 'n1', zh: '一段说明', en: 'A normal category description.',     category: 'normal' },
+      { key: 'n2', zh: '很长的说明文案', en: 'This is a long normal category text but it is not button-label so should not trigger the length rule.', category: 'normal' },
+    ]
+  });
+  const issues = validateTranslations(excel);
+  assert.strictEqual(issues.length, 0, '合法条目不应被误报，实际问题：' + JSON.stringify(issues));
+  return 'testValidateNoFalsePositive passed';
+}
+
+// 翻译质量校验：自定义阈值。
+async function testValidateCustomMaxLen() {
+  const dir = tempDir('i18n-validate-len-');
+  const excel = path.join(dir, 'master.xlsx');
+  createExcel(excel, {
+    Sheet1: [
+      { key: 'short', zh: '短', en: 'Short', category: 'button-label' },
+      // 10 chars，刚好超过自定义阈值 8
+      { key: 'longish', zh: '较长', en: 'LongLabel', category: 'button-label' },
+    ]
+  });
+  // 默认 30 时不报
+  assert.strictEqual(validateTranslations(excel).length, 0);
+  // 自定义 8 时 longish 应报
+  const issues = validateTranslations(excel, { maxButtonLabelLen: 8 });
+  assert.strictEqual(issues.length, 1);
+  assert.strictEqual(issues[0].key, 'longish');
+  assert.strictEqual(issues[0].issue, 'BUTTON_LABEL_TOO_LONG');
+  return 'testValidateCustomMaxLen passed';
+}
+
+// 翻译质量校验：master.xlsx 不存在时抛错。
+async function testValidateMissingFile() {
+  const dir = tempDir('i18n-validate-missing-');
+  const excel = path.join(dir, 'not-exists.xlsx');
+  let threw = false;
+  try {
+    validateTranslations(excel);
+  } catch (e) {
+    threw = true;
+    assert.ok(/不存在/.test(e.message), '错误信息应说明文件不存在');
+  }
+  assert.ok(threw, 'master.xlsx 不存在时应抛错');
+  return 'testValidateMissingFile passed';
+}
+
 (async () => {
   const tests = [
     testNoConflict,
@@ -568,7 +685,11 @@ async function testGenSkipsMixedCategoryKeys() {
     testGenSkipsMixedCategoryKeys,
 testIgnoreRegexDoesNotMatchAcrossLines,
     testIgnoreRegexRejectsDescriptiveComment,
-    testReplaceFallbackRespectsIgnore
+    testReplaceFallbackRespectsIgnore,
+    testValidateTranslations,
+    testValidateNoFalsePositive,
+    testValidateCustomMaxLen,
+    testValidateMissingFile
   ];
   for (const t of tests) {
     try {

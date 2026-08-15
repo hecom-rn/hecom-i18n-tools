@@ -2,7 +2,11 @@
 import { Command } from 'commander';
 import { scanCommand } from './scanner';
 import { replaceCommand } from './replacer';
-import { genCommand } from './i18nGenerator';
+import {
+  genCommand,
+  validateTranslations,
+  printValidationIssues,
+} from './i18nGenerator';
 import { scanStaticConstsCommand } from './staticConstsScanner';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -192,6 +196,18 @@ program
       config:         opts.config,
     });
 
+    // 仅在传入 master.xlsx 时跑校验：校验 master 中的翻译质量，
+    // 防止 LLM 输出的脏数据（语言混淆 / prompt 回显 / button-label 超长）落盘到 locales。
+    if (opts.master) {
+      console.log('\n========== [5/5] 校验翻译质量 ==========');
+      const issues = validateTranslations(opts.master);
+      if (issues.length > 0) {
+        printValidationIssues(issues);
+        console.error('\n❌ 翻译校验未通过，已中止流程。请修复 master.xlsx 后重试。');
+        process.exit(1);
+      }
+    }
+
     console.log('\n✅ 一键流程完成！');
   });
 
@@ -206,6 +222,27 @@ program
       opts.src = opts.src.split(',').map((s: string) => s.trim()).filter(Boolean);
     }
     scanStaticConstsCommand(opts);
+  });
+
+program
+  .command('validate')
+  .description(
+    '校验 master.xlsx 中的翻译质量：检测非中文语言含 CJK 字符 / prompt 关键词 / button-label 超长'
+  )
+  .requiredOption('-m, --master <master>', '主 Excel 文件路径')
+  .option(
+    '--max-button-label-len <len>',
+    'button-label 译文最大字符数（默认 30）',
+    '30'
+  )
+  .action((opts) => {
+    const issues = validateTranslations(opts.master, {
+      maxButtonLabelLen: Number(opts.maxButtonLabelLen),
+    });
+    printValidationIssues(issues);
+    if (issues.length > 0) {
+      process.exit(1);
+    }
   });
 
 program.parse(process.argv);
