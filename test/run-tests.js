@@ -6,7 +6,7 @@ const path = require('path');
 const os = require('os');
 const xlsx = require('xlsx');
 const { genCommand } = require('../dist/i18nGenerator');
-const { extractStringsFromFile, scanCommand } = require('../dist/scanner');
+const { extractStringsFromFile, scanCommand, extractTCallsFromFile } = require('../dist/scanner');
 
 let passed = 0;
 let failed = 0;
@@ -362,6 +362,63 @@ async function testIgnoreRegexDoesNotMatchAcrossLines() {
   return 'testIgnoreRegexDoesNotMatchAcrossLines passed';
 }
 
+// 回归测试：// @i18n-ignore 单独写在 const 声明块之前一行时，
+// 后续所有中文字符串（包括跨过 const = [...] 这种"中间非字符串行"的）都应被忽略。
+async function testIgnoreScopeExtendsOverBlankLineFreeBlock() {
+  const dir = tempDir('i18n-ignore-scope-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "function Page() {\n" +
+    "  const arr = (\n" +
+    "    // @i18n-ignore\n" +
+    "    { x: '材料/设备' }\n" +
+    "  );\n" +
+    "  const arr2 = { y: '无关' };\n" +  // 空行隔开了作用域，不应被忽略
+    "  return { z: '应当扫描' };\n" +
+    "}\n",
+    'utf8'
+  );
+  const results = extractStringsFromFile(file, {});
+  const byValue = {};
+  for (const r of results) byValue[r.value] = r;
+  assert.ok(!byValue['材料/设备'], '"材料/设备"（const 块之前单写一行 // @i18n-ignore）应被忽略');
+  assert.ok(byValue['无关'], '"无关"（与 ignore 注释之间有空行）应被扫描');
+  assert.ok(byValue['应当扫描'], '"应当扫描" 应被扫描');
+  return 'testIgnoreScopeExtendsOverBlankLineFreeBlock passed';
+}
+
+// 回归测试：legacy 扫描（t('key') 调用点）也尊重 // @i18n-ignore 注释作用域。
+async function testLegacyScanRespectsIgnoreScope() {
+  const fsExtra = require('fs');
+  const dir = tempDir('i18n-legacy-ignore-');
+  const file = path.join(dir, 'sample.tsx');
+  fs.writeFileSync(
+    file,
+    "function Page() {\n" +
+    "  const opts = (\n" +
+    "    // @i18n-ignore\n" +
+    "    { label: t('i18n_master_key') }\n" +
+    "  );\n" +
+    "  return { x: t('i18n_other_key') };\n" +
+    "}\n",
+    'utf8'
+  );
+  const masterZhMap = {
+    'i18n_master_key': '材料/设备',
+    'i18n_other_key': '应当扫描',
+  };
+  // 传 buttonLabelRules 才能让 extractTCallsFromFile 进入扫描流程
+  const results = extractTCallsFromFile(file, masterZhMap, {
+    buttonLabelRules: { buttonComponents: [] },
+  });
+  const byValue = {};
+  for (const r of results) byValue[r.value] = r;
+  assert.ok(!byValue['材料/设备'], 'legacy 扫描中：const 块之前单写一行 // @i18n-ignore 应忽略 t("i18n_master_key")');
+  assert.ok(byValue['应当扫描'], 'legacy 扫描中：与 ignore 注释隔了空行的 t() 应被扫描');
+  return 'testLegacyScanRespectsIgnoreScope passed';
+}
+
 async function testGenIgnoresCategoryColumn() {
   const dir = tempDir('i18n-gen-cat-');
   const excel = path.join(dir, 'data.xlsx');
@@ -439,7 +496,9 @@ async function testGenSkipsMixedCategoryKeys() {
     testButtonLabelDisabledByDefault,
     testGenIgnoresCategoryColumn,
     testGenSkipsMixedCategoryKeys,
-    testIgnoreRegexDoesNotMatchAcrossLines
+    testIgnoreRegexDoesNotMatchAcrossLines,
+    testIgnoreScopeExtendsOverBlankLineFreeBlock,
+    testLegacyScanRespectsIgnoreScope
   ];
   for (const t of tests) {
     try {

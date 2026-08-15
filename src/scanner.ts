@@ -93,6 +93,34 @@ function isOverLongButtonCandidate(text: string): boolean {
 }
 
 /**
+ * 顶层版 shouldIgnoreNode：判断节点的行号是否在某个 // @i18n-ignore 注释的作用域内。
+ *
+ * 检查规则（按优先级）：
+ *   1. 节点范围内任意行含 i18n-ignore 注释
+ *   2. 节点直接前一行含 i18n-ignore 注释（典型行尾注释场景）
+ *   3. 节点前若干行内含独立成行的 i18n-ignore 注释（trim 后以 // 开头），
+ *      且中间无空行、其它正常代码行（典型"const 声明块之前单写一行注释"场景）
+ *
+ * 仅独立成行的 ignore 注释（行尾注释除外）才会扩展作用域，避免误判。
+ * 提供给 extractTCallsFromFile（legacy 扫描）调用，因为后者不在 extractStringsFromFile 闭包内。
+ */
+function shouldIgnoreNodeByLine(codeLines: string[], ignoreLines: number[], nodeStartLine: number, nodeEndLine: number): boolean {
+  for (let line = nodeStartLine; line <= nodeEndLine; line++) {
+    if (ignoreLines.includes(line)) return true;
+  }
+  if (ignoreLines.includes(nodeStartLine - 1)) return true;
+  for (let i = 1; i <= 10; i++) {
+    const prevLine = nodeStartLine - i;
+    if (prevLine < 1) break;
+    const prevContent = codeLines[prevLine - 1] || '';
+    if (prevContent.trim() === '') break;
+    if (prevContent.trim().startsWith('//') && ignoreLines.includes(prevLine)) return true;
+    break;
+  }
+  return false;
+}
+
+/**
  * 为 t('key') 调用点识别按钮 label 上下文（顶层版，供 extractTCallsFromFile 调用）：
  *   规则 1: 父链是 JSXAttribute 且 name 命中 jsxAttributes 白名单
  *           <Button title={t('key')}>
@@ -235,13 +263,31 @@ function extractStringsFromFile(filePath: string, options: ScanOptions = scanOpt
         return true;
       }
     }
-    
+
     // 还要检查节点开始行的前一行是否有 i18n-ignore 注释
     // 这是为了处理注释在前、字符串在后的情况
     if (ignoreLines.includes(nodeStartLine - 1)) {
       return true;
     }
-    
+
+    // 扩展块级作用域：// @i18n-ignore 单独成行时（例如 const 声明块之前），
+    // 后续所有非空行内的中文字符串也应被忽略，直到遇到空行（逻辑块边界）。
+    // 仅追溯独立成行的 i18n-ignore（trim 后以 // 开头），
+    // 避免把行尾注释（如 code, // @i18n-ignore）的"作用域"扩大。
+    for (let i = 1; i <= 10; i++) {
+      const prevLine = nodeStartLine - i;
+      if (prevLine < 1) break;
+      const prevContent = codeLines[prevLine - 1] || '';
+      // 遇到空行：ignore 作用域结束
+      if (prevContent.trim() === '') break;
+      // 仅当是独立成行的 i18n-ignore 注释时，才扩展作用域
+      if (prevContent.trim().startsWith('//') && ignoreLines.includes(prevLine)) {
+        return true;
+      }
+      // 否则遇到非空非 ignore 行就停止回溯（隔了正常代码行）
+      break;
+    }
+
     return false;
   }
 
@@ -668,6 +714,14 @@ function extractTCallsFromFile(
 
   if (code.includes('i18n-ignore-file')) return results;
 
+  // 收集 // i18n-ignore / /* ... i18n-ignore ... */ 注释行号
+  // （与 extractStringsFromFile 内的 ignoreLines 收集逻辑一致）
+  const ignoreRegex = /\/\/.*i18n-ignore|\/\*.*i18n-ignore.*\*\//;
+  const ignoreLines: number[] = [];
+  for (let li = 0; li < codeLines.length; li++) {
+    if (ignoreRegex.test(codeLines[li])) ignoreLines.push(li + 1);
+  }
+
   const isTypeScript =
     /\.(ts|tsx)$/.test(filePath) || code.includes('import type') || code.includes('export type');
   let ast: any;
@@ -706,6 +760,9 @@ function extractTCallsFromFile(
       seen.add(key);
 
       const line = keyArg.loc?.start.line || node.loc?.start.line || 0;
+      const endLine = node.loc?.end.line || line;
+      // 跳过被 // @i18n-ignore 注释作用域覆盖的 t() 调用点
+      if (shouldIgnoreNodeByLine(codeLines, ignoreLines, line, endLine)) return;
       const gitlab = gitlabPrefix ? generateGitlabUrl(gitlabPrefix, relPath, line) : '';
       const isButton = detectButtonLabelForTCall(callPath, codeLines, buttonRules, zhValue);
       const category: 'button-label' | 'normal' = isButton ? 'button-label' : 'normal';
