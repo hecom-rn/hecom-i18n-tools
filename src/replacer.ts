@@ -653,8 +653,23 @@ export function replaceCommand(opts: any) {
       fileMap[file].forEach((row) => {
         const value = row.zh;
         if (!value || !code.includes(value)) return;
-        const reg = new RegExp(`(['"` + '`' + `])${escapeRegExp(value)}\\1`, 'g');
-        code = code.replace(reg, `t('${row.key}')`);
+        const escapedValue = escapeRegExp(value);
+        // 仅匹配形如 'value'、"value"、`value` 的引号包围字面量
+        const reg = new RegExp(`(['"` + '`' + `])${escapedValue}\\1`, 'g');
+        // 收集所有匹配的 [start, end]，剔除落在注释区间内的命中
+        const matches: Array<{ start: number; end: number; replacement: string }> = [];
+        let m: RegExpExecArray | null;
+        while ((m = reg.exec(code))) {
+          const start = m.index;
+          const end = m.index + m[0].length;
+          if (isInComment(start, end)) continue; // 跳过注释内的字面量
+          matches.push({ start, end, replacement: `t('${row.key}')` });
+        }
+        // 从后往前替换，避免位置偏移
+        for (let i = matches.length - 1; i >= 0; i--) {
+          const { start, end, replacement } = matches[i];
+          code = code.substring(0, start) + replacement + code.substring(end);
+        }
       });
       
       try {
