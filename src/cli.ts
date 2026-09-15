@@ -193,7 +193,7 @@ program
     console.log('\n========== [4/5] 校验翻译质量 ==========');
     const versionIssues = validateTranslations(opts.excel);
     if (versionIssues.length > 0) {
-      printValidationIssues(versionIssues);
+      printValidationIssues(versionIssues, 'version.xlsx');
       console.error('\n❌ 翻译校验未通过，已中止流程。请修复后重试。');
       process.exit(1);
     }

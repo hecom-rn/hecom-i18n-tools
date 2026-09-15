@@ -244,7 +244,8 @@ export function validateTranslations(
         const v = row[col];
         if (!v || typeof v !== 'string') return;
         // 检查1: 非中文语言包含 CJK 字符
-        if (CJK_REGEX.test(v)) {
+        // 日语为汉字假名混写（如「価格」「労務」），汉字属正常文字，豁免本检查
+        if (col.toLowerCase() !== 'ja' && CJK_REGEX.test(v)) {
           issues.push({
             sheet: sheetName,
             key,
@@ -290,7 +291,7 @@ export function validateTranslations(
  * 打印校验问题到 stderr，按 issue 类型分组。
  * 无问题时打印成功提示到 stdout。
  */
-export function printValidationIssues(issues: ValidationIssue[]): void {
+export function printValidationIssues(issues: ValidationIssue[], fileName = 'master.xlsx'): void {
   if (issues.length === 0) {
     console.log('[i18n-validate] ✅ 所有翻译通过校验');
     return;
@@ -319,7 +320,7 @@ export function printValidationIssues(issues: ValidationIssue[]): void {
       console.error(`      ${iss.lang}: ${JSON.stringify(sample)}`);
     });
   });
-  console.error(`\n请修复 master.xlsx 中上述条目后重试。`);
+  console.error(`\n请修复 ${fileName} 中上述条目后重试。`);
 }
 
 // ----------------------------- 邮件发送 ------------------------------------
