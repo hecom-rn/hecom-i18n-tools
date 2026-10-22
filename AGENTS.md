@@ -18,6 +18,7 @@
 | 运行测试 | `npm test`（先 build，再跑 `node test/run-tests.js`）|
 | 启动 CLI（已构建） | `npm start` 或 `node dist/cli.js` |
 | 开发期便利脚本 | `npm run scan` / `npm run replace` / `npm run gen`（直接调 `dist/cli.js` 子命令）|
+| 版本发布 | `npm run patch` / `minor` / `major`（升版本 + 版本提交 + 打 tag + 推送，tag 触发 CI 发布到 npm）|
 
 子命令总览（`src/cli.ts:50`）：
 - `scan -s <src> -o <out>` 扫描源码生成 Excel（`--src` 支持逗号分隔多路径）
@@ -64,4 +65,4 @@
 - `.npmrc` 含 `ts-node=true`（项目内脚本依赖）。
 - `dist/`、Excel 翻译文件（`*.xlsx`）均被 `.gitignore` 忽略；不要把临时翻译表提交进版本控制。
 - `tsconfig.json` `include` 中含 `gen-locale.js`（仓库暂无此文件，构建无影响，但删除/移动时不要顺手删它）。
-- 当前 master 领先 origin/master 10 个 commit，发版/发 PR 前先与维护者确认是否要推送。
+- 发布走 `npm run patch` / `minor` / `major`（详见 `RELEASING.md`）：先中文 conventional commit 保证工作区干净，再执行发布命令；tag `v*` 触发 GitHub Actions 发布到 npm（NPM_TOKEN 在 hecom-rn 组织级 secret）。**发布必须等用户明确指令**（含版本级别），改动验证通过不等于可以发布。npm 验证要用官方源 `--prefer-online`（npmmirror 镜像延迟大，勿误判失败）。

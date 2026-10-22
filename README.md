@@ -84,6 +84,7 @@ function App() {
 - 📘 [完整使用指南](./USAGE.md) - 详细的功能说明和最佳实践
 - 🚀 [快速入门指南](./QUICKSTART.md) - 30秒上手教程
 - 👥 [团队协作流程](./WORKFLOW.md) - 多人协作的完整工作流程
+- 🏷️ [版本发布指南](./RELEASING.md) - `npm run patch/minor/major` 发布流程与排障
 
 ## 🔧 命令详解
 
