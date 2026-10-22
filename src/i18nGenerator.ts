@@ -94,11 +94,15 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
  * - CJK_IN_NON_ZH: 非中文语言包含中文字符（如俄语翻译里出现"业务"）
  * - PROMPT_LEAK: 译文包含 LLM prompt 关键词（说明 LLM 回显了 prompt 内容）
  * - BUTTON_LABEL_TOO_LONG: button-label 译文超过阈值（违反极简规则）
+ * - PLACEHOLDER_LEAK: 译文含未还原的占位符（换行占位符 {NEWLINE} 变体，
+ *   或数据占位符被写成单花括号 {Identifier1}）——这类占位符不会被 i18next
+ *   正确处理，会把占位符原文渲染到界面上
  */
 export type ValidationIssueType =
   | 'CJK_IN_NON_ZH'
   | 'PROMPT_LEAK'
-  | 'BUTTON_LABEL_TOO_LONG';
+  | 'BUTTON_LABEL_TOO_LONG'
+  | 'PLACEHOLDER_LEAK';
 
 export interface ValidationIssue {
   sheet: string;
@@ -139,6 +143,15 @@ const PROMPT_MARKERS: string[] = [
 const VALIDATION_RESERVED_HEADERS = new Set([
   'key', 'file', 'line', 'gitlab', 'value', 'category', 'zh',
 ]);
+
+// 伪占位符泄漏检测：
+// 1) 换行占位符变体（{{NEWLINE}} / {NEWLINE}）——翻译流程本应把它还原成真换行，
+//    残留在译文里说明还原环节漏掉了这个变体；
+// 2) 数据占位符被写成单花括号（{Identifier1} 而非 {{Identifier1}}）——i18next
+//    只按双花括号插值，单花括号会原样显示在界面上。
+const NEWLINE_TOKEN_REGEX = /\{+\s*NEWLINE\s*\}+/;
+const SINGLE_BRACE_PLACEHOLDER_REGEX =
+  /(?<!\{)\{(?:Identifier|CallExpression|MemberExpression|LogicalExpression|BinaryExpression|ConditionalExpression|OptionalMemberExpression)\d+\}(?!\})/;
 
 /**
  * 解析 master.xlsx 工作表为统一的 {col -> value} 格式。
@@ -280,6 +293,21 @@ export function validateTranslations(
             issue: 'BUTTON_LABEL_TOO_LONG',
           });
         }
+        // 检查4: 伪占位符泄漏（换行占位符变体 / 单花括号数据占位符）
+        if (
+          NEWLINE_TOKEN_REGEX.test(v) ||
+          SINGLE_BRACE_PLACEHOLDER_REGEX.test(v)
+        ) {
+          issues.push({
+            sheet: sheetName,
+            key,
+            lang: col,
+            zh,
+            value: v,
+            category: cat,
+            issue: 'PLACEHOLDER_LEAK',
+          });
+        }
       });
     });
   });
@@ -306,6 +334,7 @@ export function printValidationIssues(issues: ValidationIssue[], fileName = 'mas
     CJK_IN_NON_ZH: '非中文语言含中文字符',
     PROMPT_LEAK: '译文含 prompt 关键词',
     BUTTON_LABEL_TOO_LONG: 'button-label 译文超长',
+    PLACEHOLDER_LEAK: '译文含未还原的占位符（{NEWLINE} 变体或单花括号占位符）',
   };
   console.error(`[i18n-validate] ❌ 发现 ${issues.length} 处翻译质量问题：`);
   groups.forEach((items, type) => {

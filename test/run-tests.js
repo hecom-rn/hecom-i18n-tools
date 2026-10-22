@@ -601,6 +601,41 @@ async function testValidateTranslations() {
   return 'testValidateTranslations passed';
 }
 
+// 翻译质量校验：未还原的占位符（{NEWLINE} 变体 / 单花括号数据占位符）必须报出。
+async function testValidatePlaceholderLeak() {
+  const dir = tempDir('i18n-placeholder-');
+  const excel = path.join(dir, 'master.xlsx');
+  createExcel(excel, {
+    Sheet1: [
+      // 正常：双花括号占位符 + 真换行，不应报错
+      { key: 'ok1', zh: '计划时长：\n实际时长：', en: 'Planned: {{Identifier1}}\nActual: {{Identifier2}}', category: 'normal' },
+      // 正常：RichText 命名占位符与普通花括号不属于数据占位符，不应误报
+      { key: 'ok2', zh: '请选择 <count> 项', en: 'Select {b} items of {fieldLabel}', category: 'normal' },
+      // 泄漏1：AI 把换行占位符写成单花括号
+      { key: 'leak1', zh: '计划时长：\n实际时长：', en: 'Planned: {NEWLINE}Actual', category: 'normal' },
+      // 泄漏2：换行占位符双花括号变体残留
+      { key: 'leak2', zh: '计划时长：\n实际时长：', ja: '計画期間：{{NEWLINE}}実際期間', category: 'normal' },
+      // 泄漏3：数据占位符被写成单花括号（i18next 不会插值，界面原样显示）
+      { key: 'leak3', zh: '版本 {Identifier1}', de: 'Version {Identifier1}', category: 'normal' },
+    ]
+  });
+  const issues = validateTranslations(excel);
+  const leaks = issues.filter(i => i.issue === 'PLACEHOLDER_LEAK');
+  assert.strictEqual(
+    leaks.length,
+    3,
+    '期望 3 处占位符泄漏，实际：' + JSON.stringify(leaks.map(i => i.key + ':' + i.lang))
+  );
+  assert.ok(leaks.some(i => i.key === 'leak1' && i.lang === 'en'), 'leak1/en 应报泄漏');
+  assert.ok(leaks.some(i => i.key === 'leak2' && i.lang === 'ja'), 'leak2/ja 应报泄漏');
+  assert.ok(leaks.some(i => i.key === 'leak3' && i.lang === 'de'), 'leak3/de 应报泄漏');
+  assert.ok(
+    !leaks.some(i => i.key === 'ok1' || i.key === 'ok2'),
+    '双花括号占位符与 RichText 命名占位符不应被误报'
+  );
+  return 'testValidatePlaceholderLeak passed';
+}
+
 // 翻译质量校验：合法 button-label 不应被误报。
 async function testValidateNoFalsePositive() {
   const dir = tempDir('i18n-validate-fp-');
@@ -687,6 +722,7 @@ testIgnoreRegexDoesNotMatchAcrossLines,
     testIgnoreRegexRejectsDescriptiveComment,
     testReplaceFallbackRespectsIgnore,
     testValidateTranslations,
+    testValidatePlaceholderLeak,
     testValidateNoFalsePositive,
     testValidateCustomMaxLen,
     testValidateMissingFile

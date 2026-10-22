@@ -139,6 +139,23 @@ def identify_columns(df):
 
 NEWLINE_PLACEHOLDER = '{{NEWLINE}}'
 
+# AI 偶发把双花括号占位符"规范化"成单花括号（{{NEWLINE}} → {NEWLINE}、
+# {{Identifier1}} → {Identifier1}）。还原环节若只认精确拼写，这些变体会一路
+# 写进 Excel 与语言包，最终在界面上原样显示占位符，故按容错规则还原。
+NEWLINE_PLACEHOLDER_RE = re.compile(r'\{+\s*NEWLINE\s*\}+')
+SINGLE_BRACE_PLACEHOLDER_RE = re.compile(
+    r'(?<!\{)\{('
+    r'(?:Identifier|CallExpression|MemberExpression|LogicalExpression|'
+    r'BinaryExpression|ConditionalExpression|OptionalMemberExpression)'
+    r'\d+)\}(?!\})'
+)
+
+
+def restore_placeholders(text):
+    """把 AI 输出里的占位符变体还原成 i18next 能正确处理的形态。"""
+    text = NEWLINE_PLACEHOLDER_RE.sub('\n', text)
+    return SINGLE_BRACE_PLACEHOLDER_RE.sub(r'{{\1}}', text)
+
 
 def translate_text(text, target_lang, api_key, prompt_template, retry_count=0, category='normal'):
     if not text or (hasattr(pd, 'isna') and pd.isna(text)) or str(text).strip() == "":
@@ -180,8 +197,8 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0, c
         )
         if response.status_code == HTTPStatus.OK:
             result = response.output.choices[0].message.content.strip()
-            # 将占位符还原为真实换行符
-            result = result.replace(NEWLINE_PLACEHOLDER, '\n')
+            # 将占位符还原为真实换行符与双花括号数据占位符
+            result = restore_placeholders(result)
             is_valid, _ = validate_translation_script(result, target_lang)
             if not is_valid and retry_count < 1:
                 print(f"  [retry] Validation failed for {target_lang}, retrying...")
