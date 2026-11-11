@@ -896,7 +896,9 @@ export async function scanCommand(opts: any) {
     xlsx.utils.book_append_sheet(wb, ws, sheetName);
     console.log(`扫描完成，导出 ${all.length} 条，Sheet: ${sheetName}`);
   }
-  xlsx.writeFile(wb, out);
+  // compression: true —— SheetJS 默认 compression=false，扫描产物 xlsx 会以
+  // STORED（不压缩）方式写入，体积膨胀 3~5 倍。显式开启 DEFLATE。
+  xlsx.writeFile(wb, out, { compression: true });
   console.log(`全部扫描完成，Excel: ${out}`);
 }
 

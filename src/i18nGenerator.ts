@@ -83,7 +83,10 @@ function mergeWorkbookIntoMaster(srcPath: string, masterPath: string) {
     masterWb.Sheets[sheetName] = xlsx.utils.json_to_sheet(rows, { header: headers });
   });
 
-  xlsx.writeFile(masterWb, resolvedMaster);
+  // compression: true —— SheetJS 默认 compression=false，会把 xlsx 的 zip 成员以
+  // STORED（不压缩）方式写入，master.xlsx 体积会膨胀 3~5 倍（如 986KB → 4.1MB），
+  // 导致 git 仓库体积暴涨、且二进制文件几乎无法产生可读 diff。显式开启 DEFLATE。
+  xlsx.writeFile(masterWb, resolvedMaster, { compression: true });
   console.log(`已将 ${path.basename(resolvedSrc)} 合并到主表 ${resolvedMaster}`);
 }
 
