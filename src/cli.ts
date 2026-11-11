@@ -23,6 +23,7 @@ function runPythonTranslate(opts: {
   prompt?: string;
   promptFile?: string;
   categoryColumn?: string;
+  model?: string;
 }) {
   const scriptPath = path.join(__dirname, '..', 'scripts', 'translate_cli.py');
   if (!fs.existsSync(scriptPath)) {
@@ -40,6 +41,7 @@ function runPythonTranslate(opts: {
   if (opts.prompt)        args.push('--prompt',           opts.prompt);
   if (opts.promptFile)    args.push('--prompt-file',      opts.promptFile);
   if (opts.categoryColumn !== undefined) args.push('--category-column', opts.categoryColumn);
+  if (opts.model)            args.push('--model',               opts.model);
 
   const python = opts.python || 'python3';
   const result = spawnSync(python, args, { stdio: 'inherit' });
@@ -113,6 +115,7 @@ program
   .option('--prompt <prompt>', '自定义 Prompt 模板（需含 {text} 和 {target_lang}）')
   .option('--prompt-file <promptFile>', 'Prompt 模板文件路径')
   .option('--category-column <categoryColumn>', '承载 category 元数据的列名（默认: category；传空字符串禁用）')
+  .option('--model <model>', 'DashScope 模型名（默认: 自动降级链 qwen-plus-latest → qwen-plus）')
   .action((opts) => {
     runPythonTranslate({
       excel:         opts.excel,
@@ -124,6 +127,7 @@ program
       prompt:        opts.prompt,
       promptFile:    opts.promptFile,
       categoryColumn: opts.categoryColumn,
+      model:         opts.model,
     });
   });
 

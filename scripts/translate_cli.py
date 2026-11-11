@@ -157,6 +157,34 @@ def restore_placeholders(text):
     return SINGLE_BRACE_PLACEHOLDER_RE.sub(r'{{\1}}', text)
 
 
+# 模型候选链（按优先级尝试）
+#
+# 平台侧的 API Key 可能只被授权了部分模型：例如 2026-11 实测某些 key 对
+# `qwen-plus-latest` 返回 AccessDenied（"Access denied by API-Key restrictions"），
+# 而 `qwen-plus` 可用。硬编码单个模型会让整条产线静默产出空译文（每格都报
+# API error 但流程照跑），因此改为候选链 + 自动降级：
+#   - 优先用滚动版本 qwen-plus-latest（平台修复授权后自动恢复使用，无需再改代码）
+#   - 该模型不可用时降级到 qwen-plus（稳定版，独立配额）
+#   - 一旦某个模型成功，就在本次进程内记住它，避免每格重复试错
+# 可用 --model 显式指定单一模型覆盖本链。
+MODEL_CANDIDATES = ('qwen-plus-latest', 'qwen-plus')
+
+# 本次进程内已验证可用的模型（None=尚未确定）
+_active_model = None
+
+
+def _get_model_candidates():
+    """返回本次调用应尝试的模型序列。"""
+    if _active_model:
+        return (_active_model,)
+    return MODEL_CANDIDATES
+
+
+def _set_active_model(model):
+    global _active_model
+    _active_model = model
+
+
 def translate_text(text, target_lang, api_key, prompt_template, retry_count=0, category='normal'):
     if not text or (hasattr(pd, 'isna') and pd.isna(text)) or str(text).strip() == "":
         return None, None
@@ -189,26 +217,31 @@ def translate_text(text, target_lang, api_key, prompt_template, retry_count=0, c
             "Do NOT return English unless the source text is a proper noun."
         )
 
-    try:
-        response = Generation.call(
-            model='qwen-plus-latest',
-            messages=[{'role': 'user', 'content': prompt}],
-            result_format='message',
-        )
-        if response.status_code == HTTPStatus.OK:
-            result = response.output.choices[0].message.content.strip()
-            # 将占位符还原为真实换行符与双花括号数据占位符
-            result = restore_placeholders(result)
-            is_valid, _ = validate_translation_script(result, target_lang)
-            if not is_valid and retry_count < 1:
-                print(f"  [retry] Validation failed for {target_lang}, retrying...")
-                return translate_text(text, target_lang, api_key, prompt_template, retry_count=1)
-            return result, None
-        else:
-            err = f"API error [{target_lang}]: {response.code} - {response.message}"
-            return None, err
-    except Exception as e:
-        return None, f"Exception [{target_lang}]: {str(e)}"
+    errors = []
+    for model in _get_model_candidates():
+        try:
+            response = Generation.call(
+                model=model,
+                messages=[{'role': 'user', 'content': prompt}],
+                result_format='message',
+            )
+            if response.status_code == HTTPStatus.OK:
+                _set_active_model(model)
+                result = response.output.choices[0].message.content.strip()
+                # 将占位符还原为真实换行符与双花括号数据占位符
+                result = restore_placeholders(result)
+                is_valid, _ = validate_translation_script(result, target_lang)
+                if not is_valid and retry_count < 1:
+                    print(f"  [retry] Validation failed for {target_lang}, retrying...")
+                    return translate_text(text, target_lang, api_key, prompt_template, retry_count=1)
+                return result, None
+            else:
+                errors.append(f"{model}: {response.code} - {response.message}")
+        except Exception as e:
+            errors.append(f"{model}: {str(e)}")
+
+    err = f"API error [{target_lang}]: " + ' | '.join(errors)
+    return None, err
 
 
 def process_sheet(df, api_key, prompt_template, sheet_name,
@@ -318,7 +351,14 @@ def main():
     parser.add_argument('--prompt-file', help='Path to a file containing the prompt template')
     parser.add_argument('--category-column', default='category',
                         help='Column name carrying category metadata (default: category). Empty string disables.')
+    parser.add_argument('--model', default='',
+                        help='DashScope model to use (default: auto-fallback chain qwen-plus-latest -> qwen-plus). '
+                             'Specify a single model to override the chain.')
     args = parser.parse_args()
+
+    # --model 显式指定时覆盖候选链（_active_model 命中后不再尝试其它模型）
+    if args.model:
+        _set_active_model(args.model)
 
     if not os.path.exists(args.excel):
         print(f"Error: Excel file not found: {args.excel}", file=sys.stderr)
